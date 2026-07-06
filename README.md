@@ -62,20 +62,17 @@ EMPLOYEE_PASSWORD = "replace-with-a-strong-employee-password"
 For individual staff accounts, use:
 
 ```toml
+MANAGER_USERS = ["manager"]
+
 [EMPLOYEE_USERS]
 sales = "strong-password-for-sales"
 warehouse = "strong-password-for-warehouse"
 manager = "strong-password-for-manager"
 ```
 
-Until employee credentials are configured, the local development login is:
+`MANAGER_USERS` controls who can see manager-only views such as Finance and Admin. Until employee credentials are configured, local development uses built-in demo accounts such as `Mia / frameflow-mia` and `Kevin / frameflow-kevin`. These demo accounts are disabled automatically as soon as `EMPLOYEE_PASSWORD` or `[EMPLOYEE_USERS]` is configured.
 
-```text
-username: team
-password: frameflow-team
-```
-
-Change this before putting the website online.
+Change all demo credentials before putting the website online.
 
 ## Admin setup
 

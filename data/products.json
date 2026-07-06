@@ -3135,7 +3135,47 @@
     "updated_at": "2026-07-03T17:28",
     "color_options": [
       "Stack right",
-      "Stack left"
+      "Stack left",
+      "Center open"
+    ],
+    "color_information": "",
+    "stock_information": ""
+  },
+  {
+    "id": "AC-200",
+    "section": "Accessories",
+    "category": "Accessories",
+    "name": "Door Blind",
+    "subtitle": "Adjustable privacy blind",
+    "description": "Door blind accessory with horizontal slats for privacy, light control, and a clean integrated door appearance.",
+    "base_rate": 15.0,
+    "minimum_price": 0.0,
+    "directions": [
+      "Left opening",
+      "Right opening",
+      "Center open"
+    ],
+    "glass_colors": [
+      "Blind slats"
+    ],
+    "frame_colors": [
+      "Black",
+      "White",
+      "Charcoal",
+      "Bronze"
+    ],
+    "accent": "#4f4b45",
+    "hero_image": "uploads/ac-200-door-blind.webp",
+    "detail_images": [
+      "uploads/ac-200-door-blind.webp"
+    ],
+    "active": true,
+    "updated_at": "2026-07-06T13:47",
+    "color_options": [
+      "Black",
+      "White",
+      "Charcoal",
+      "Bronze"
     ],
     "color_information": "",
     "stock_information": ""

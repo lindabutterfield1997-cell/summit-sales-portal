@@ -45,6 +45,16 @@ IMAGE_MIGRATION_MARKER = DATA_DIR / ".image-ratio-3x2-v1"
 PRODUCT_IMAGE_SIZE = (1500, 1000)
 OUTPUT_DIR = APP_DIR / "output" / "pdf"
 DB_PATH = APP_DIR / "quotes.db"
+DB_TIMEOUT_SECONDS = 30
+
+
+def db_connect(*, isolation_level: str | None = "DEFERRED") -> sqlite3.Connection:
+    conn = sqlite3.connect(DB_PATH, timeout=DB_TIMEOUT_SECONDS, isolation_level=isolation_level)
+    conn.execute("PRAGMA busy_timeout = 30000")
+    conn.execute("PRAGMA foreign_keys = ON")
+    return conn
+
+
 OPENING_STYLE_DIR = APP_DIR / "assets" / "opening_styles"
 OPENING_DIRECTION_DIR = APP_DIR / "assets" / "opening_directions"
 BRANDING_DIR = APP_DIR / "assets" / "branding"
@@ -199,6 +209,7 @@ def init_state() -> None:
         "quote_discount_value": 0.0,
         "quote_installation_fee": 0.0,
         "quote_sales_tax_enabled": False,
+        "checkout_quote_adjustments": None,
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -206,7 +217,8 @@ def init_state() -> None:
 
 
 def init_db() -> None:
-    with sqlite3.connect(DB_PATH) as conn:
+    with db_connect() as conn:
+        conn.execute("PRAGMA journal_mode=WAL")
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS quotes (
@@ -417,13 +429,16 @@ def init_db() -> None:
             """
         )
         normalize_legacy_database_labels(conn)
-        conn.execute(
-            """
-            UPDATE customers
-            SET assigned_to = 'Liyao'
-            WHERE assigned_to IS NULL OR assigned_to = ''
-            """
-        )
+        default_owner = current_employee_name()
+        if default_owner:
+            conn.execute(
+                """
+                UPDATE customers
+                SET assigned_to = ?
+                WHERE assigned_to IS NULL OR assigned_to = ''
+                """,
+                (default_owner,),
+            )
 
 
 def product_to_dict(product: Product) -> dict[str, Any]:
@@ -466,27 +481,12 @@ def is_hinge_door(product: Product) -> bool:
 
 
 def door_priced_product(product: Product) -> Product:
-    if product.section != "Doors":
-        return product
-    if is_pivot_door(product):
-        target_rate = 120.0
-    elif is_hinge_door(product):
-        target_rate = 45.0
-    else:
-        target_rate = 50.0
-    if product.base_rate == target_rate and product.minimum_price == 0.0:
-        return product
-    return Product(
-        **{
-            **asdict(product),
-            "base_rate": target_rate,
-            "minimum_price": 0.0,
-        }
-    )
+    return product
 
 
 def apply_door_pricing_policy(products: list[Product]) -> list[Product]:
-    return [door_priced_product(product) for product in products]
+    # Catalog pricing is admin-managed. Startup should never rewrite saved rates or minimums.
+    return list(products)
 
 
 def seed_product_images(product: Product) -> Product:
@@ -497,12 +497,17 @@ def seed_product_images(product: Product) -> Product:
 
 def save_products(products: list[Product]) -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    temporary = PRODUCT_FILE.with_suffix(".tmp")
-    temporary.write_text(
-        json.dumps([product_to_dict(product) for product in products], indent=2, ensure_ascii=False),
-        encoding="utf-8",
-    )
-    temporary.replace(PRODUCT_FILE)
+    suffix = datetime.now().strftime("%Y%m%d%H%M%S%f")
+    temporary = PRODUCT_FILE.with_name(f"{PRODUCT_FILE.name}.{os.getpid()}.{suffix}.tmp")
+    try:
+        temporary.write_text(
+            json.dumps([product_to_dict(product) for product in products], indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        temporary.replace(PRODUCT_FILE)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
 
 
 def load_products() -> list[Product]:
@@ -519,7 +524,9 @@ def load_products() -> list[Product]:
         return cleaned
     except (OSError, ValueError, TypeError) as exc:
         st.error(f"Product catalog could not be loaded: {exc}")
-        return [seed_product_images(product) for product in DEFAULT_PRODUCTS]
+        if PRODUCTS:
+            return PRODUCTS
+        st.stop()
 
 
 def reload_products() -> None:
@@ -687,6 +694,8 @@ def make_opening_style_icon(icon_id: str) -> None:
 
 def make_opening_direction_icon(icon_id: str) -> None:
     path = opening_direction_path(icon_id)
+    if path.exists():
+        return
     OPENING_DIRECTION_DIR.mkdir(parents=True, exist_ok=True)
     base_width, base_height = 760, 430
     scale = 3
@@ -949,6 +958,12 @@ def employee_credentials() -> dict[str, str]:
             credentials[str(username)] = str(users[username])
     except Exception:
         pass
+    try:
+        shared_password = str(st.secrets["EMPLOYEE_PASSWORD"])
+    except Exception:
+        shared_password = os.getenv("EMPLOYEE_PASSWORD", "")
+    if shared_password:
+        credentials.setdefault("team", shared_password)
     default_sales_accounts = {
         "Mia": "frameflow-mia",
         "Ethan": "frameflow-ethan",
@@ -957,8 +972,6 @@ def employee_credentials() -> dict[str, str]:
         "Liyao": "frameflow-liyao",
         "Kevin": "frameflow-kevin",
     }
-    for username, password in default_sales_accounts.items():
-        credentials.setdefault(username, password)
     if not credentials:
         credentials.update(default_sales_accounts)
     return credentials
@@ -975,8 +988,20 @@ def using_default_employee_login() -> bool:
     }
 
 
-MANAGER_ACCOUNTS = {"Kevin"}
 SALES_ACCOUNTS = ("Mia", "Ethan", "Zane", "Tony", "Liyao")
+
+
+def manager_accounts() -> set[str]:
+    try:
+        configured = st.secrets["MANAGER_USERS"]
+        if isinstance(configured, str):
+            return {configured}
+        return {str(username) for username in configured}
+    except Exception:
+        raw = os.getenv("MANAGER_USERS", "")
+    if raw:
+        return {username.strip() for username in re.split(r"[,;\n]", raw) if username.strip()}
+    return {"Kevin"} if using_default_employee_login() else set()
 
 
 def canonical_employee_name(username: str) -> str:
@@ -993,7 +1018,7 @@ def current_employee_name() -> str:
 
 def is_manager_user(username: str | None = None) -> bool:
     name = canonical_employee_name(username or current_employee_name())
-    return name in MANAGER_ACCOUNTS
+    return name in manager_accounts()
 
 
 def customer_owner_filter() -> str:
@@ -1003,7 +1028,7 @@ def customer_owner_filter() -> str:
 def customer_owner_options(current: str | None = "") -> tuple[str, ...]:
     current_value = (current or "").strip()
     options = list(SALES_ACCOUNTS)
-    if current_value and current_value not in options and current_value not in MANAGER_ACCOUNTS:
+    if current_value and current_value not in options and current_value not in manager_accounts():
         options.append(current_value)
     return tuple(options)
 
@@ -1032,7 +1057,7 @@ def employee_login_page() -> None:
         unsafe_allow_html=True,
     )
     if using_default_employee_login():
-        st.warning("Default sales accounts are active. Set [EMPLOYEE_USERS] in Secrets before publishing this website.")
+        st.warning("Default sales accounts are active. Set EMPLOYEE_PASSWORD or [EMPLOYEE_USERS] in Secrets before publishing this website.")
     left, middle, right = st.columns([1, 1.15, 1])
     with middle:
         with st.form("employee-login"):
@@ -1277,7 +1302,7 @@ def inventory_rows(search: str = "", product_id: str = "") -> list[sqlite3.Row]:
     if clauses:
         query += " WHERE " + " AND ".join(clauses)
     query += " ORDER BY received_date DESC, updated_at DESC, id DESC"
-    with sqlite3.connect(DB_PATH) as conn:
+    with db_connect() as conn:
         conn.row_factory = sqlite3.Row
         return conn.execute(query, params).fetchall()
 
@@ -1285,7 +1310,7 @@ def inventory_rows(search: str = "", product_id: str = "") -> list[sqlite3.Row]:
 def inventory_item_by_id(item_id: int | None) -> sqlite3.Row | None:
     if not item_id:
         return None
-    with sqlite3.connect(DB_PATH) as conn:
+    with db_connect() as conn:
         conn.row_factory = sqlite3.Row
         return conn.execute("SELECT * FROM inventory_items WHERE id = ?", (item_id,)).fetchone()
 
@@ -1302,7 +1327,7 @@ def inventory_summary(product_id: str, color: str = "") -> dict[str, int]:
     if color:
         query += " AND (color = ? OR color IS NULL OR color = '')"
         params.append(color)
-    with sqlite3.connect(DB_PATH) as conn:
+    with db_connect() as conn:
         row = conn.execute(query, params).fetchone()
     total = int(row[0] or 0)
     reserved = int(row[1] or 0)
@@ -1329,17 +1354,24 @@ def inventory_direction_code(value: Any) -> str:
     normalized = normalized_inventory_text(value)
     if not normalized:
         return ""
+    swing = ""
+    if "inswing" in normalized:
+        swing = "IN"
+    elif "outswing" in normalized:
+        swing = "OUT"
     if "righttoleft" in normalized or normalized.endswith("r"):
-        return "R"
-    if "lefttoright" in normalized or normalized.endswith("l"):
-        return "L"
-    if "center" in normalized or normalized.startswith("c"):
-        return "C"
-    if "right" in normalized:
-        return "R"
-    if "left" in normalized:
-        return "L"
-    return normalized
+        side = "R"
+    elif "lefttoright" in normalized or normalized.endswith("l"):
+        side = "L"
+    elif "center" in normalized or normalized.startswith("c"):
+        side = "C"
+    elif "right" in normalized:
+        side = "R"
+    elif "left" in normalized:
+        side = "L"
+    else:
+        return normalized
+    return f"{side}-{swing}" if swing else side
 
 
 def inventory_direction_matches(stored: Any, selected: str) -> bool:
@@ -1347,6 +1379,8 @@ def inventory_direction_matches(stored: Any, selected: str) -> bool:
     if not stored_code:
         return True
     selected_code = inventory_direction_code(selected)
+    if "-" in stored_code or "-" in selected_code:
+        return stored_code == selected_code
     return stored_code == selected_code
 
 
@@ -1393,7 +1427,7 @@ def matching_inventory_rows(
     frame: str,
     direction: str,
 ) -> list[sqlite3.Row]:
-    with sqlite3.connect(DB_PATH) as conn:
+    with db_connect() as conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
             """
@@ -1425,11 +1459,54 @@ def matching_inventory_rows(
     return matches
 
 
+def matching_inventory_rows_from_conn(
+    conn: sqlite3.Connection,
+    product_id: str,
+    width: float,
+    height: float,
+    color: str,
+    glass: str,
+    frame: str,
+    direction: str,
+) -> list[sqlite3.Row]:
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute(
+        """
+        SELECT * FROM inventory_items
+        WHERE product_id = ?
+          AND status IN ('Available', 'Reserved')
+        ORDER BY received_date DESC, updated_at DESC, id DESC
+        """,
+        (product_id,),
+    ).fetchall()
+    matches = [
+        row for row in rows
+        if inventory_available_quantity(row) > 0
+        and inventory_dimension_matches(row["width"], width)
+        and inventory_dimension_matches(row["height"], height)
+        and inventory_text_matches(row["color"], color)
+        and inventory_text_matches(row["glass"], glass)
+        and inventory_text_matches(row["frame"], frame)
+        and inventory_direction_matches(row["direction"], direction)
+    ]
+    matches.sort(
+        key=lambda row: (
+            inventory_match_score(row, width, height, color, glass, frame, direction),
+            inventory_available_quantity(row),
+            row["received_date"] or "",
+        ),
+        reverse=True,
+    )
+    return matches
+
+
 def deduct_inventory_for_order_items(items: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[str]]:
     updated_items: list[dict[str, Any]] = []
     messages: list[str] = []
     now = datetime.now().isoformat(timespec="seconds")
-    with sqlite3.connect(DB_PATH) as conn:
+    with db_connect(isolation_level=None) as conn:
+        conn.row_factory = sqlite3.Row
+        conn.execute("BEGIN IMMEDIATE")
         for item in items:
             updated = dict(item)
             if updated.get("inventory_deducted"):
@@ -1440,7 +1517,8 @@ def deduct_inventory_for_order_items(items: list[dict[str, Any]]) -> tuple[list[
             deducted = 0
             product_id = str(updated.get("product_id") or "")
             if product_id and requested > 0:
-                matches = matching_inventory_rows(
+                matches = matching_inventory_rows_from_conn(
+                    conn,
                     product_id,
                     float(updated.get("width") or 0),
                     float(updated.get("height") or 0),
@@ -1456,17 +1534,24 @@ def deduct_inventory_for_order_items(items: list[dict[str, Any]]) -> tuple[list[
                     if available <= 0:
                         continue
                     take = min(remaining, available)
-                    new_quantity = max(int(row["quantity"] or 0) - take, 0)
-                    new_reserved = min(int(row["reserved_quantity"] or 0), new_quantity)
-                    new_status = "Sold" if new_quantity <= 0 else ("Reserved" if new_reserved > 0 else "Available")
-                    conn.execute(
+                    result = conn.execute(
                         """
                         UPDATE inventory_items
-                        SET quantity = ?, reserved_quantity = ?, status = ?, updated_at = ?
-                        WHERE id = ?
+                        SET
+                            quantity = quantity - ?,
+                            reserved_quantity = MIN(reserved_quantity, quantity - ?),
+                            status = CASE
+                                WHEN quantity - ? <= 0 THEN 'Sold'
+                                WHEN MIN(reserved_quantity, quantity - ?) > 0 THEN 'Reserved'
+                                ELSE 'Available'
+                            END,
+                            updated_at = ?
+                        WHERE id = ? AND (quantity - reserved_quantity) >= ?
                         """,
-                        (new_quantity, new_reserved, new_status, now, int(row["id"])),
+                        (take, take, take, take, now, int(row["id"]), take),
                     )
+                    if result.rowcount != 1:
+                        continue
                     remaining -= take
                     deducted += take
             updated["inventory_deducted"] = True
@@ -1481,6 +1566,7 @@ def deduct_inventory_for_order_items(items: list[dict[str, Any]]) -> tuple[list[
                 updated["production_required"] = False
                 messages.append(f"{updated.get('name') or product_id or 'Product'}: deducted {deducted} from inventory.")
             updated_items.append(updated)
+        conn.commit()
     return updated_items, messages
 
 
@@ -1501,7 +1587,7 @@ def inventory_status_text(product_id: str, requested: int = 1, color: str = "") 
 def save_inventory_item(item_id: int | None, data: dict[str, Any]) -> int:
     now = datetime.now().isoformat(timespec="seconds")
     payload = {**data, "updated_at": now}
-    with sqlite3.connect(DB_PATH) as conn:
+    with db_connect() as conn:
         if item_id:
             assignments = ", ".join(f"{key} = ?" for key in payload)
             conn.execute(
@@ -1520,7 +1606,7 @@ def save_inventory_item(item_id: int | None, data: dict[str, Any]) -> int:
 
 
 def delete_inventory_item(item_id: int) -> None:
-    with sqlite3.connect(DB_PATH) as conn:
+    with db_connect() as conn:
         conn.execute("DELETE FROM inventory_items WHERE id = ?", (item_id,))
 
 
@@ -1552,7 +1638,7 @@ def customer_rows(status: str | None = None, search: str = "") -> list[sqlite3.R
             CASE priority WHEN 'High' THEN 0 WHEN 'Medium' THEN 1 ELSE 2 END,
             COALESCE(next_followup_date, install_followup_date, order_date, lost_date, updated_at) ASC
     """
-    with sqlite3.connect(DB_PATH) as conn:
+    with db_connect() as conn:
         conn.row_factory = sqlite3.Row
         return conn.execute(query, params).fetchall()
 
@@ -1579,14 +1665,14 @@ def company_customer_rows(status: str | None = None, search: str = "") -> list[s
     if clauses:
         query += " WHERE " + " AND ".join(clauses)
     query += " ORDER BY COALESCE(order_date, updated_at) DESC, name ASC"
-    with sqlite3.connect(DB_PATH) as conn:
+    with db_connect() as conn:
         conn.row_factory = sqlite3.Row
         return conn.execute(query, params).fetchall()
 
 
 def customer_by_id(customer_id: int) -> sqlite3.Row | None:
     owner = customer_owner_filter()
-    with sqlite3.connect(DB_PATH) as conn:
+    with db_connect() as conn:
         conn.row_factory = sqlite3.Row
         if owner:
             return conn.execute(
@@ -1599,7 +1685,7 @@ def customer_by_id(customer_id: int) -> sqlite3.Row | None:
 def find_customer_by_contact(email: str, phone: str) -> sqlite3.Row | None:
     owner = customer_owner_filter()
     owner_clause = " AND lower(assigned_to) = lower(?)" if owner else ""
-    with sqlite3.connect(DB_PATH) as conn:
+    with db_connect() as conn:
         conn.row_factory = sqlite3.Row
         if email.strip():
             row = conn.execute(
@@ -1624,7 +1710,7 @@ def add_customer_timeline_event(
     quote_number: str | None = None,
 ) -> None:
     event_value = event_date.isoformat() if isinstance(event_date, date) else event_date
-    with sqlite3.connect(DB_PATH) as conn:
+    with db_connect() as conn:
         conn.execute(
             """
             INSERT INTO customer_timeline
@@ -1643,7 +1729,7 @@ def add_customer_timeline_event(
 
 
 def customer_timeline(customer_id: int) -> list[sqlite3.Row]:
-    with sqlite3.connect(DB_PATH) as conn:
+    with db_connect() as conn:
         conn.row_factory = sqlite3.Row
         return conn.execute(
             """
@@ -1714,7 +1800,7 @@ def save_customer_cart(customer_id: int | None, cart: list[dict[str, Any]] | Non
     if not customer_id:
         return
     payload = json.dumps(cart if cart is not None else st.session_state.cart, ensure_ascii=False)
-    with sqlite3.connect(DB_PATH) as conn:
+    with db_connect() as conn:
         conn.execute(
             """
             INSERT OR REPLACE INTO customer_carts (customer_id, updated_at, payload)
@@ -1728,7 +1814,7 @@ def save_customer_wishlist(customer_id: int | None, wishlist: list[dict[str, Any
     if not customer_id:
         return
     payload = json.dumps(wishlist if wishlist is not None else wishlist_from_cart(), ensure_ascii=False)
-    with sqlite3.connect(DB_PATH) as conn:
+    with db_connect() as conn:
         conn.execute(
             "UPDATE customers SET wishlist = ?, updated_at = ? WHERE id = ?",
             (payload, datetime.now().isoformat(timespec="seconds"), int(customer_id)),
@@ -1738,7 +1824,7 @@ def save_customer_wishlist(customer_id: int | None, wishlist: list[dict[str, Any
 def load_customer_cart(customer_id: int | None) -> list[dict[str, Any]]:
     if not customer_id:
         return []
-    with sqlite3.connect(DB_PATH) as conn:
+    with db_connect() as conn:
         row = conn.execute("SELECT payload FROM customer_carts WHERE customer_id = ?", (customer_id,)).fetchone()
     if not row:
         return []
@@ -1751,14 +1837,26 @@ def load_customer_cart(customer_id: int | None) -> list[dict[str, Any]]:
     return [item for item in data if isinstance(item, dict)]
 
 
+def reset_quote_adjustments() -> None:
+    st.session_state.quote_discount_type = "No discount"
+    st.session_state.quote_discount_value = 0.0
+    st.session_state.quote_installation_fee = 0.0
+    st.session_state.quote_sales_tax_enabled = False
+    st.session_state.quote_discount_percent_value = 0.0
+    st.session_state.quote_discount_amount_value = 0.0
+    st.session_state.checkout_quote_adjustments = None
+
+
 def set_active_customer(customer_id: int | None, load_cart: bool = True) -> None:
+    if st.session_state.get("active_customer_id") != customer_id:
+        reset_quote_adjustments()
     st.session_state.active_customer_id = customer_id
     if load_cart:
         st.session_state.cart = load_customer_cart(customer_id)
 
 
 def customer_quotes(customer_id: int) -> list[sqlite3.Row]:
-    with sqlite3.connect(DB_PATH) as conn:
+    with db_connect() as conn:
         conn.row_factory = sqlite3.Row
         return conn.execute(
             "SELECT * FROM quotes WHERE customer_id = ? ORDER BY created_at DESC",
@@ -1793,6 +1891,11 @@ def order_item_match_key(item: dict[str, Any]) -> tuple[Any, ...]:
     )
 
 
+def ordered_wishlist_items(wishlist: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    ordered = [item for item in wishlist if str(item.get("order_status") or "").lower() == "ordered"]
+    return ordered or wishlist
+
+
 def quote_items_match_ordered_products(payload: dict[str, Any], wishlist: list[dict[str, Any]]) -> bool:
     quote_items = payload.get("items")
     if not isinstance(quote_items, list) or len(quote_items) != len(wishlist):
@@ -1803,7 +1906,8 @@ def quote_items_match_ordered_products(payload: dict[str, Any], wishlist: list[d
 
 
 def order_summary_from_ordered_products(wishlist: list[dict[str, Any]]) -> dict[str, float | str]:
-    product_total = wishlist_total(wishlist)
+    ordered_items = ordered_wishlist_items(wishlist)
+    product_total = wishlist_total(ordered_items)
     tax = product_total * FIXED_SALES_TAX_RATE
     installation = 0.0
     return {
@@ -1819,9 +1923,10 @@ def order_summary_from_ordered_products(wishlist: list[dict[str, Any]]) -> dict[
 
 
 def order_summary_from_quote(row: sqlite3.Row | None, wishlist: list[dict[str, Any]]) -> dict[str, float | str]:
+    ordered_items = ordered_wishlist_items(wishlist)
     if row is not None:
         payload = quote_payload(row)
-        if quote_items_match_ordered_products(payload, wishlist):
+        if quote_items_match_ordered_products(payload, ordered_items):
             subtotal = float(payload.get("subtotal") or row["subtotal"] or 0)
             discount = float(payload.get("discount") or 0)
             tax = float(payload.get("tax") or row["tax"] or 0)
@@ -1839,7 +1944,7 @@ def order_summary_from_quote(row: sqlite3.Row | None, wishlist: list[dict[str, A
                 "total": total,
                 "product_total": product_total,
             }
-    return order_summary_from_ordered_products(wishlist)
+    return order_summary_from_ordered_products(ordered_items)
 
 
 def render_order_summary(summary: dict[str, float | str]) -> None:
@@ -1975,9 +2080,9 @@ def render_payment_schedule_editor(customer: sqlite3.Row, order_total: float) ->
                     key=f"second-payment-paid-{customer_id}",
                 )
             else:
-                second_date = date.today()
-                second_amount = 0.0
-                second_paid = False
+                second_date = date_from_iso(schedule["second_date"], date.today())
+                second_amount = float(schedule["second_amount"])
+                second_paid = bool(schedule["second_paid"])
 
         paid_total = (float(first_amount) if first_paid else 0.0) + (float(second_amount) if second_enabled and second_paid else 0.0)
         balance_due = max(float(order_total) - paid_total, 0.0)
@@ -2058,7 +2163,7 @@ def add_service_timeline_event(
     notes: str = "",
 ) -> None:
     event_value = event_date.isoformat() if isinstance(event_date, date) else event_date
-    with sqlite3.connect(DB_PATH) as conn:
+    with db_connect() as conn:
         conn.execute(
             """
             INSERT INTO service_timeline
@@ -2077,7 +2182,7 @@ def add_service_timeline_event(
 
 
 def service_timeline(service_request_id: int) -> list[sqlite3.Row]:
-    with sqlite3.connect(DB_PATH) as conn:
+    with db_connect() as conn:
         conn.row_factory = sqlite3.Row
         return conn.execute(
             """
@@ -2099,7 +2204,7 @@ def service_requests(search: str = "", status: str = "") -> list[sqlite3.Row]:
     params: list[Any] = []
     owner = customer_owner_filter()
     if owner:
-        clauses.append("lower(customers.assigned_to) = lower(?)")
+        clauses.append("(customers.id IS NULL OR lower(customers.assigned_to) = lower(?))")
         params.append(owner)
     if status:
         clauses.append("service_requests.status = ?")
@@ -2126,7 +2231,7 @@ def service_requests(search: str = "", status: str = "") -> list[sqlite3.Row]:
             service_requests.updated_at DESC,
             service_requests.id DESC
     """
-    with sqlite3.connect(DB_PATH) as conn:
+    with db_connect() as conn:
         conn.row_factory = sqlite3.Row
         return conn.execute(query, params).fetchall()
 
@@ -2134,7 +2239,7 @@ def service_requests(search: str = "", status: str = "") -> list[sqlite3.Row]:
 def service_request_by_id(request_id: int | None) -> sqlite3.Row | None:
     if not request_id:
         return None
-    with sqlite3.connect(DB_PATH) as conn:
+    with db_connect() as conn:
         conn.row_factory = sqlite3.Row
         return conn.execute("SELECT * FROM service_requests WHERE id = ?", (request_id,)).fetchone()
 
@@ -2142,7 +2247,7 @@ def service_request_by_id(request_id: int | None) -> sqlite3.Row | None:
 def save_service_request(data: dict[str, Any]) -> int:
     now = datetime.now().isoformat(timespec="seconds")
     payload = {**data, "updated_at": now}
-    with sqlite3.connect(DB_PATH) as conn:
+    with db_connect() as conn:
         payload = {**payload, "request_number": service_request_number(), "created_at": now}
         columns = ", ".join(payload)
         placeholders = ", ".join("?" for _ in payload)
@@ -2187,7 +2292,7 @@ def update_service_request(
         "completed_at": completed_at,
         "updated_at": now,
     }
-    with sqlite3.connect(DB_PATH) as conn:
+    with db_connect() as conn:
         assignments = ", ".join(f"{key} = ?" for key in updates)
         conn.execute(
             f"UPDATE service_requests SET {assignments} WHERE id = ?",
@@ -2406,6 +2511,9 @@ def render_wishlist(wishlist: list[dict[str, Any]], selection_key: str = "", tit
             details.append(f"{item['frame']} frame")
         if item.get("color"):
             details.append(f"{item['color']} color")
+        order_status = str(item.get("order_status") or "").strip()
+        if order_status:
+            details.append(f"Status: {order_status}")
         amount = float(item.get("line_total") or 0)
         line = f"{index}. **{name}** x {quantity}"
         if details:
@@ -2616,9 +2724,18 @@ def normalize_legacy_database_labels(conn: sqlite3.Connection) -> None:
                 )
 
 
+def quote_discount_raw_value() -> float:
+    discount_type = st.session_state.get("quote_discount_type", "No discount")
+    if discount_type == "Percent %":
+        return float(st.session_state.get("quote_discount_percent_value", st.session_state.get("quote_discount_value", 0.0)) or 0.0)
+    if discount_type == "Amount $":
+        return float(st.session_state.get("quote_discount_amount_value", st.session_state.get("quote_discount_value", 0.0)) or 0.0)
+    return 0.0
+
+
 def cart_discount(subtotal: float) -> tuple[float, str]:
     discount_type = st.session_state.get("quote_discount_type", "No discount")
-    discount_value = float(st.session_state.get("quote_discount_value", 0.0) or 0.0)
+    discount_value = quote_discount_raw_value()
     if discount_type == "Percent %":
         amount = subtotal * min(max(discount_value, 0.0), 100.0) / 100
         label = f"{discount_value:.2f}% discount"
@@ -2732,7 +2849,7 @@ def save_customer(customer_id: int | None, data: dict[str, Any]) -> int:
         if owner:
             data = {**data, "assigned_to": owner}
     data = {**data, "updated_at": now}
-    with sqlite3.connect(DB_PATH) as conn:
+    with db_connect() as conn:
         if customer_id:
             assignments = ", ".join(f"{key} = ?" for key in data)
             conn.execute(
@@ -2794,7 +2911,7 @@ def update_customer_status(
                 if production_required_items(updated_wishlist):
                     updates["install_followup_date"] = (order_day + timedelta(days=70)).isoformat()
 
-    with sqlite3.connect(DB_PATH) as conn:
+    with db_connect() as conn:
         assignments = ", ".join(f"{key} = ?" for key in updates)
         conn.execute(
             f"UPDATE customers SET {assignments} WHERE id = ?",
@@ -2820,7 +2937,7 @@ def update_customer_status(
 def update_customer_basic_info(customer_id: int, data: dict[str, Any]) -> None:
     now = datetime.now().isoformat(timespec="seconds")
     updates = {**data, "updated_at": now}
-    with sqlite3.connect(DB_PATH) as conn:
+    with db_connect() as conn:
         assignments = ", ".join(f"{key} = ?" for key in updates)
         conn.execute(
             f"UPDATE customers SET {assignments} WHERE id = ?",
@@ -2845,7 +2962,7 @@ def update_customer_payment_schedule(
     second_payment_paid: bool,
 ) -> None:
     now = datetime.now().isoformat(timespec="seconds")
-    with sqlite3.connect(DB_PATH) as conn:
+    with db_connect() as conn:
         conn.execute(
             """
             UPDATE customers
@@ -2864,9 +2981,9 @@ def update_customer_payment_schedule(
                 max(float(first_payment_amount), 0.0),
                 int(first_payment_paid),
                 int(second_payment_enabled),
-                second_payment_date.isoformat() if second_payment_enabled else "",
-                max(float(second_payment_amount), 0.0) if second_payment_enabled else 0.0,
-                int(second_payment_paid) if second_payment_enabled else 0,
+                second_payment_date.isoformat(),
+                max(float(second_payment_amount), 0.0),
+                int(second_payment_paid),
                 now,
                 customer_id,
             ),
@@ -2908,10 +3025,25 @@ def wishlist_item_label(item: dict[str, Any], index: int) -> str:
     return label
 
 
-def mark_wishlist_items_ordered(customer_id: int, selected_items: list[dict[str, Any]]) -> None:
+def mark_wishlist_items_ordered(customer_id: int, wishlist: list[dict[str, Any]], selected_indexes: list[int]) -> None:
+    if not selected_indexes:
+        return
+    selected_index_set = {int(index) for index in selected_indexes}
+    selected_items = [dict(item) for index, item in enumerate(wishlist) if index in selected_index_set]
     if not selected_items:
         return
     selected_items, inventory_messages = deduct_inventory_for_order_items(selected_items)
+    selected_by_index = dict(zip([index for index in range(len(wishlist)) if index in selected_index_set], selected_items))
+    preserved_wishlist: list[dict[str, Any]] = []
+    for index, item in enumerate(wishlist):
+        if index in selected_by_index:
+            updated_item = dict(selected_by_index[index])
+            updated_item["order_status"] = "Ordered"
+        else:
+            updated_item = dict(item)
+            updated_item.setdefault("order_status", "Wishlist")
+        preserved_wishlist.append(updated_item)
+
     order_day = date.today()
     factory_items = production_required_items(selected_items)
     install_followup_date = (order_day + timedelta(days=70)).isoformat() if factory_items else order_day.isoformat()
@@ -2931,7 +3063,7 @@ def mark_wishlist_items_ordered(customer_id: int, selected_items: list[dict[str,
         "followup_stage": "Quoted",
         "products_interest": product_names,
         "budget": total,
-        "wishlist": json.dumps(selected_items, ensure_ascii=False),
+        "wishlist": json.dumps(preserved_wishlist, ensure_ascii=False),
         "install_status": "Not scheduled",
         "install_followup_date": install_followup_date,
         "first_payment_amount": first_payment_due,
@@ -2943,7 +3075,7 @@ def mark_wishlist_items_ordered(customer_id: int, selected_items: list[dict[str,
         "second_payment_paid": 0,
         "on_hold": 0,
     }
-    with sqlite3.connect(DB_PATH) as conn:
+    with db_connect() as conn:
         assignments = ", ".join(f"{key} = ?" for key in updates)
         conn.execute(
             f"UPDATE customers SET {assignments} WHERE id = ?",
@@ -2973,7 +3105,7 @@ def mark_wishlist_items_ordered(customer_id: int, selected_items: list[dict[str,
 
 
 def delete_customer(customer_id: int) -> None:
-    with sqlite3.connect(DB_PATH) as conn:
+    with db_connect() as conn:
         quote_rows = conn.execute(
             "SELECT quote_number FROM quotes WHERE customer_id = ?",
             (customer_id,),
@@ -3067,7 +3199,7 @@ def upsert_customer_from_quote(
         "lost_date": row_value(existing, "lost_date", today_iso()),
         "lost_reason": row_value(existing, "lost_reason"),
         "lost_notes": row_value(existing, "lost_notes"),
-        "wishlist": json.dumps(wishlist_from_cart(), ensure_ascii=False),
+        "wishlist": row_value(existing, "wishlist") if quoted_status == "Ordered" and row_value(existing, "wishlist") else json.dumps(wishlist_from_cart(), ensure_ascii=False),
     }
     customer_id = save_customer(int(existing["id"]) if existing else None, payload)
     add_customer_timeline_event(customer_id, date.today(), "Quote created", quote_note, quote["quote_number"])
@@ -3088,7 +3220,8 @@ def customer_editor(existing: sqlite3.Row | None = None, form_key: str = "custom
             options=list(STATUS_LABELS),
             format_func=lambda option: STATUS_LABELS[option],
             default=default_status,
-        )
+            key=f"{form_key}-status",
+        ) or default_status
         identity1, identity2 = st.columns(2)
         with identity1:
             name = st.text_input("Customer name *", value=existing["name"] if is_edit else "")
@@ -3231,8 +3364,8 @@ def customer_editor(existing: sqlite3.Row | None = None, form_key: str = "custom
                     second_payment_amount = st.number_input("Second payment amount", min_value=0.0, value=float(existing["second_payment_amount"] or 0) if is_edit else 0.0, step=100.0)
                     second_payment_paid = st.checkbox("Second payment paid", value=bool(int(row_value(existing, "second_payment_paid", 0) or 0)) if is_edit else False)
                 else:
-                    second_payment_amount = 0.0
-                    second_payment_paid = False
+                    second_payment_amount = float(existing["second_payment_amount"] or 0) if is_edit else 0.0
+                    second_payment_paid = bool(int(row_value(existing, "second_payment_paid", 0) or 0)) if is_edit else False
                 install_followup_date = st.date_input("Installation follow-up", value=date_from_iso(existing["install_followup_date"] if is_edit else None, date.today() + timedelta(days=30)))
             install_status = st.selectbox(
                 "Installation status",
@@ -3246,8 +3379,8 @@ def customer_editor(existing: sqlite3.Row | None = None, form_key: str = "custom
             first_payment_paid = bool(int(row_value(existing, "first_payment_paid", 0) or 0)) if is_edit else False
             second_payment_enabled = bool(int(row_value(existing, "second_payment_enabled", 1) or 0)) if is_edit else True
             second_payment_date = date_from_iso(existing["second_payment_date"] if is_edit else None, date.today())
-            second_payment_amount = float(existing["second_payment_amount"] or 0) if is_edit and second_payment_enabled else 0.0
-            second_payment_paid = bool(int(row_value(existing, "second_payment_paid", 0) or 0)) if is_edit and second_payment_enabled else False
+            second_payment_amount = float(existing["second_payment_amount"] or 0) if is_edit else 0.0
+            second_payment_paid = bool(int(row_value(existing, "second_payment_paid", 0) or 0)) if is_edit else False
             install_followup_date = date_from_iso(existing["install_followup_date"] if is_edit else None, date.today())
             install_status = existing["install_status"] if is_edit else ""
 
@@ -3278,7 +3411,7 @@ def customer_editor(existing: sqlite3.Row | None = None, form_key: str = "custom
                 wishlist_to_save = wishlist_from_cart()
             elif use_cart_wishlist and drafted_wishlist:
                 wishlist_to_save = drafted_wishlist
-            elif selected_products:
+            elif selected_products and not (is_edit and existing["status"] == "Ordered"):
                 wishlist_to_save = wishlist_from_products(selected_products)
             else:
                 wishlist_to_save = existing_wishlist
@@ -3322,9 +3455,9 @@ def customer_editor(existing: sqlite3.Row | None = None, form_key: str = "custom
                 "first_payment_amount": float(first_payment_amount),
                 "first_payment_paid": int(first_payment_paid),
                 "second_payment_enabled": int(second_payment_enabled),
-                "second_payment_date": second_payment_date.isoformat() if second_payment_enabled else "",
-                "second_payment_amount": float(second_payment_amount) if second_payment_enabled else 0.0,
-                "second_payment_paid": int(second_payment_paid) if second_payment_enabled else 0,
+                "second_payment_date": second_payment_date.isoformat() if second_payment_enabled else (str(row_value(existing, "second_payment_date", "")) if is_edit else ""),
+                "second_payment_amount": float(second_payment_amount) if second_payment_enabled or is_edit else 0.0,
+                "second_payment_paid": int(second_payment_paid) if second_payment_enabled or is_edit else 0,
                 "install_followup_date": install_followup_date.isoformat(),
                 "install_status": install_status,
                 "lost_date": lost_date.isoformat(),
@@ -3510,14 +3643,17 @@ def customer_card(row: sqlite3.Row) -> None:
         st.markdown("**Quick status update**")
         status_options = list(STATUS_LABELS)
         status_key = f"quick-status-{row['id']}"
-        if status_key not in st.session_state:
+        status_row_key = f"{status_key}-row-status"
+        if status_key not in st.session_state or st.session_state.get(status_row_key) != row["status"]:
             st.session_state[status_key] = row["status"]
+            st.session_state[status_row_key] = row["status"]
+        current_status_value = st.session_state.get(status_key, row["status"])
         quick1, quick2, quick3 = st.columns([1, 1.4, 1])
         with quick1:
             selected_status = st.selectbox(
                 "Status",
                 status_options,
-                index=status_options.index(st.session_state[status_key]) if st.session_state[status_key] in status_options else 0,
+                index=status_options.index(current_status_value) if current_status_value in status_options else 0,
                 format_func=lambda value: STATUS_LABELS[value],
                 key=status_key,
             )
@@ -3580,8 +3716,7 @@ def customer_card(row: sqlite3.Row) -> None:
                     disabled=not selected_wishlist_indexes,
                     width="stretch",
                 ):
-                    selected_items = [wishlist[index] for index in selected_wishlist_indexes]
-                    mark_wishlist_items_ordered(int(row["id"]), selected_items)
+                    mark_wishlist_items_ordered(int(row["id"]), wishlist, selected_wishlist_indexes)
                     st.success("Selected wishlist products were marked as ordered.")
                     st.rerun()
 
@@ -3821,7 +3956,7 @@ def finance_page() -> None:
     start, end = period_bounds(period, anchor)
     filtered = [
         record for record in records
-        if salesperson == "All sales" or record["sales"] == salesperson
+        if salesperson == "All sales" or str(record["sales"]).strip().lower() == salesperson.strip().lower()
     ]
     period_orders = [
         record for record in filtered
@@ -3866,7 +4001,7 @@ def finance_page() -> None:
             contribution[sales_name] = {"orders": 0, "sales": 0.0, "collected": 0.0, "balance": 0.0}
         contribution[sales_name]["orders"] = int(contribution[sales_name]["orders"]) + 1
         contribution[sales_name]["sales"] = float(contribution[sales_name]["sales"]) + float(record["order_total"])
-        contribution[sales_name]["collected"] = float(contribution[sales_name]["collected"]) + float(record["paid_total"])
+        contribution[sales_name]["collected"] = float(contribution[sales_name]["collected"]) + payment_amount_in_period(record, start, end)
         contribution[sales_name]["balance"] = float(contribution[sales_name]["balance"]) + float(record["balance"])
 
     contribution_rows = [
@@ -3874,7 +4009,7 @@ def finance_page() -> None:
             "Salesperson": sales_name,
             "Orders": values["orders"],
             "Sales amount": money(float(values["sales"])),
-            "Collected total": money(float(values["collected"])),
+            "Collected in period": money(float(values["collected"])),
             "Open balance": money(float(values["balance"])),
             "Share": f"{(float(values['sales']) / sales_amount * 100):.1f}%" if sales_amount else "0.0%",
         }
@@ -4095,90 +4230,89 @@ def after_sales_page() -> None:
 
         selected_customer = customer_by_id(st.session_state.service_customer_id) if st.session_state.service_customer_id else None
         if not selected_customer:
-            return
-
-        st.divider()
-        st.markdown(f"### Selected customer: {selected_customer['name']}")
-        st.write(
-            f"**Phone:** {selected_customer['phone'] or 'Not set'}  \n"
-            f"**Email:** {selected_customer['email'] or 'Not set'}  \n"
-            f"**Project address:** {selected_customer['address'] or 'Not set'}"
-        )
-        quote_rows = customer_quotes(int(selected_customer["id"]))
-        if quote_rows:
-            st.markdown("**Quote / order records**")
-            for quote_row in quote_rows:
-                st.write(
-                    f"{quote_row['quote_number']} · {money(float(quote_row['total']))} · "
-                    f"{display_date(str(quote_row['created_at'])[:10])} · {quote_row['status']}"
-                )
+            st.info("Select a customer above to submit a service request. The dashboard tab is still available.")
         else:
-            st.info("This customer has no saved quote yet. You can still submit service from their wishlist / customer record if available.")
-
-        product_choices = customer_service_product_choices(int(selected_customer["id"]))
-        if not product_choices:
-            st.warning("No quote products or wishlist products found for this customer.")
-            return
-
-        with st.form("service-request-form"):
-            selected_index = st.selectbox(
-                "Choose product for after-sales request *",
-                range(len(product_choices)),
-                format_func=lambda index: product_choice_label(product_choices[index]),
+            st.divider()
+            st.markdown(f"### Selected customer: {selected_customer['name']}")
+            st.write(
+                f"**Phone:** {selected_customer['phone'] or 'Not set'}  \n"
+                f"**Email:** {selected_customer['email'] or 'Not set'}  \n"
+                f"**Project address:** {selected_customer['address'] or 'Not set'}"
             )
-            selected_choice = product_choices[selected_index]
-            snapshot = selected_choice.get("snapshot", {})
-            st.markdown("#### Product selected")
-            st.write(product_choice_label(selected_choice))
-            if snapshot.get("notes"):
-                st.caption(str(snapshot["notes"]))
+            quote_rows = customer_quotes(int(selected_customer["id"]))
+            if quote_rows:
+                st.markdown("**Quote / order records**")
+                for quote_row in quote_rows:
+                    st.write(
+                        f"{quote_row['quote_number']} · {money(float(quote_row['total']))} · "
+                        f"{display_date(str(quote_row['created_at'])[:10])} · {quote_row['status']}"
+                    )
+            else:
+                st.info("This customer has no saved quote yet. You can still submit service from their wishlist / customer record if available.")
 
-            form1, form2, form3 = st.columns(3)
-            with form1:
-                damaged_part = st.selectbox("Which part is damaged? *", DAMAGED_PARTS)
-                priority = st.selectbox("Priority", SERVICE_PRIORITIES, index=2)
-            with form2:
-                damage_reason = st.selectbox("Damage reason *", DAMAGE_REASONS)
-                appointment_date = st.date_input("Appointment date", value=date.today())
-            with form3:
-                status = st.selectbox("Initial status", SERVICE_STATUSES, index=0)
-                assigned_to = st.text_input("Assign to / Owner or after-sales team", placeholder="After-sales team, manager name...")
-            issue_description = st.text_area(
-                "Issue details *",
-                placeholder="Describe what happened, when it was discovered, photos received, access notes, customer availability...",
-                height=120,
-            )
-            internal_notes = st.text_area("Internal notes", height=80)
-            submit = st.form_submit_button("Submit after-sales request", type="primary", width="stretch")
-            if submit:
-                if not issue_description.strip():
-                    st.error("Please describe the service issue before submitting.")
-                    return
-                request_id = save_service_request(
-                    {
-                        "status": status,
-                        "priority": priority,
-                        "customer_id": int(selected_customer["id"]),
-                        "customer_name": selected_customer["name"],
-                        "customer_email": selected_customer["email"],
-                        "customer_phone": selected_customer["phone"],
-                        "project_address": selected_customer["address"],
-                        "quote_number": selected_choice.get("quote_number", ""),
-                        "product_id": selected_choice.get("product_id", ""),
-                        "product_name": selected_choice["name"],
-                        "product_snapshot": json.dumps(snapshot, ensure_ascii=False),
-                        "damaged_part": damaged_part,
-                        "damage_reason": damage_reason,
-                        "issue_description": issue_description.strip(),
-                        "appointment_date": appointment_date.isoformat(),
-                        "assigned_to": assigned_to.strip(),
-                        "internal_notes": internal_notes.strip(),
-                        "completed_at": "",
-                    }
-                )
-                st.session_state.service_editor_id = request_id
-                st.success("After-sales request submitted. It is now visible in the service dashboard.")
-                st.rerun()
+            product_choices = customer_service_product_choices(int(selected_customer["id"]))
+            if not product_choices:
+                st.warning("No quote products or wishlist products found for this customer.")
+            else:
+                with st.form("service-request-form"):
+                    selected_index = st.selectbox(
+                        "Choose product for after-sales request *",
+                        range(len(product_choices)),
+                        format_func=lambda index: product_choice_label(product_choices[index]),
+                    )
+                    selected_choice = product_choices[selected_index]
+                    snapshot = selected_choice.get("snapshot", {})
+                    st.markdown("#### Product selected")
+                    st.write(product_choice_label(selected_choice))
+                    if snapshot.get("notes"):
+                        st.caption(str(snapshot["notes"]))
+
+                    form1, form2, form3 = st.columns(3)
+                    with form1:
+                        damaged_part = st.selectbox("Which part is damaged? *", DAMAGED_PARTS)
+                        priority = st.selectbox("Priority", SERVICE_PRIORITIES, index=2)
+                    with form2:
+                        damage_reason = st.selectbox("Damage reason *", DAMAGE_REASONS)
+                        appointment_date = st.date_input("Appointment date", value=date.today())
+                    with form3:
+                        status = st.selectbox("Initial status", SERVICE_STATUSES, index=0)
+                        assigned_to = st.text_input("Assign to / Owner or after-sales team", placeholder="After-sales team, manager name...")
+                    issue_description = st.text_area(
+                        "Issue details *",
+                        placeholder="Describe what happened, when it was discovered, photos received, access notes, customer availability...",
+                        height=120,
+                    )
+                    internal_notes = st.text_area("Internal notes", height=80)
+                    submit = st.form_submit_button("Submit after-sales request", type="primary", width="stretch")
+                    if submit:
+                        if not issue_description.strip():
+                            st.error("Please describe the service issue before submitting.")
+                        else:
+                            request_id = save_service_request(
+                                {
+                                    "status": status,
+                                    "priority": priority,
+                                    "customer_id": int(selected_customer["id"]),
+                                    "customer_name": selected_customer["name"],
+                                    "customer_email": selected_customer["email"],
+                                    "customer_phone": selected_customer["phone"],
+                                    "project_address": selected_customer["address"],
+                                    "quote_number": selected_choice.get("quote_number", ""),
+                                    "product_id": selected_choice.get("product_id", ""),
+                                    "product_name": selected_choice["name"],
+                                    "product_snapshot": json.dumps(snapshot, ensure_ascii=False),
+                                    "damaged_part": damaged_part,
+                                    "damage_reason": damage_reason,
+                                    "issue_description": issue_description.strip(),
+                                    "appointment_date": appointment_date.isoformat(),
+                                    "assigned_to": assigned_to.strip(),
+                                    "internal_notes": internal_notes.strip(),
+                                    "completed_at": "",
+                                }
+                            )
+                            st.session_state.service_editor_id = request_id
+                            st.success("After-sales request submitted. It is now visible in the service dashboard.")
+                            st.rerun()
 
     with dashboard_tab:
         rows = service_requests()
@@ -4412,7 +4546,7 @@ def inventory_page() -> None:
 
 
 def top_nav() -> None:
-    left, nav1, nav2, nav3, nav4, finance_nav, cart, account = st.columns([2.35, 0.9, 1.08, 1.05, 1.2, 1.0, 1.05, 1.0], vertical_alignment="center")
+    left, nav1, nav2, nav3, nav4, finance_nav, admin_nav, cart, account = st.columns([2.0, 0.85, 1.0, 1.0, 1.15, 0.9, 0.85, 1.0, 0.95], vertical_alignment="center")
     with left:
         st.markdown('<div class="brand"><div class="mark">▦</div> FRAMEFLOW <span style="font-size:11px;color:#748079;font-weight:500">TRADE PORTAL</span></div>', unsafe_allow_html=True)
     for column, label in [(nav1, "Catalog"), (nav2, "Inventory"), (nav3, "Customers"), (nav4, "After-sales")]:
@@ -4424,6 +4558,11 @@ def top_nav() -> None:
     with finance_nav:
         if st.button("Finance", type="tertiary", width="stretch"):
             st.session_state.page = "Finance"
+            st.session_state.selected_product = None
+            st.rerun()
+    with admin_nav:
+        if is_manager_user() and st.button("Admin", type="tertiary", width="stretch"):
+            st.session_state.page = "Admin"
             st.session_state.selected_product = None
             st.rerun()
     with cart:
@@ -4961,7 +5100,7 @@ def quote_adjustment_snapshot() -> dict[str, Any]:
         "tax": tax,
         "total": discounted_subtotal + tax + installation_fee,
         "discount_type": st.session_state.get("quote_discount_type", "No discount"),
-        "discount_value": float(st.session_state.get("quote_discount_value", 0.0) or 0.0),
+        "discount_value": quote_discount_raw_value(),
         "tax_enabled": bool(st.session_state.get("quote_sales_tax_enabled", False)),
     }
 
@@ -4998,7 +5137,12 @@ def cart_page() -> None:
         cart_changed = False
         for index, item in enumerate(st.session_state.cart):
             cart_changed = normalize_cart_item(item, index) or cart_changed
-            product = get_product(item["product_id"])
+            product = get_product_or_none(str(item.get("product_id") or ""))
+            if product is None:
+                st.warning(f"A cart item references a deleted product ({item.get('product_id')}). It was removed from this cart.")
+                st.session_state.cart.pop(index)
+                save_customer_cart(st.session_state.active_customer_id)
+                st.rerun()
             line_id = str(item["line_id"])
             with st.container(border=True):
                 image, info, action = st.columns([0.85, 2.6, 0.65], vertical_alignment="center")
@@ -5054,11 +5198,13 @@ def cart_page() -> None:
             help="Apply one discount to the whole cart before generating the PDF quote.",
         )
         if st.session_state.quote_discount_type == "Percent %":
-            st.session_state.quote_discount_value = min(max(float(st.session_state.quote_discount_value or 0.0), 0.0), 100.0)
-            st.number_input("Discount percent", min_value=0.0, max_value=100.0, value=float(st.session_state.quote_discount_value), step=1.0, key="quote_discount_value")
+            if "quote_discount_percent_value" not in st.session_state:
+                st.session_state.quote_discount_percent_value = min(max(float(st.session_state.get("quote_discount_value", 0.0) or 0.0), 0.0), 100.0)
+            st.number_input("Discount percent", min_value=0.0, max_value=100.0, step=1.0, key="quote_discount_percent_value")
         elif st.session_state.quote_discount_type == "Amount $":
-            st.session_state.quote_discount_value = max(float(st.session_state.quote_discount_value or 0.0), 0.0)
-            st.number_input("Discount amount", min_value=0.0, value=float(st.session_state.quote_discount_value), step=50.0, key="quote_discount_value")
+            if "quote_discount_amount_value" not in st.session_state:
+                st.session_state.quote_discount_amount_value = max(float(st.session_state.get("quote_discount_value", 0.0) or 0.0), 0.0)
+            st.number_input("Discount amount", min_value=0.0, step=50.0, key="quote_discount_amount_value")
         else:
             st.session_state.quote_discount_value = 0.0
         st.markdown("#### Installation")
@@ -5077,6 +5223,7 @@ def cart_page() -> None:
             help="Turn this off for tax-exempt customers or orders that should not include sales tax.",
         )
         adjustment_snapshot = quote_adjustment_snapshot()
+        st.session_state.checkout_quote_adjustments = adjustment_snapshot
         subtotal = float(adjustment_snapshot["subtotal"])
         discount = float(adjustment_snapshot["discount"])
         discount_label = str(adjustment_snapshot["discount_label"])
@@ -5128,7 +5275,8 @@ def cart_page() -> None:
 
 
 def quote_number() -> str:
-    return f"Q-{datetime.now():%Y%m%d}-{datetime.now():%H%M%S}"
+    now = datetime.now()
+    return f"Q-{now:%Y%m%d}-{now:%H%M%S%f}-{secrets.token_hex(2).upper()}"
 
 
 def quote_item_thumbnail(item: dict[str, Any]) -> RLImage | str:
@@ -5151,6 +5299,11 @@ def company_logo_flowable(width: float = 2.85 * inch) -> RLImage | Paragraph:
         return RLImage(str(COMPANY_LOGO_PATH), width=width, height=width * aspect)
     styles = getSampleStyleSheet()
     return Paragraph(f"<b>{COMPANY_NAME}</b>", styles["Normal"])
+
+
+def pdf_text(value: Any, fallback: str = "-") -> str:
+    text = str(value or "").strip()
+    return html.escape(text).replace("\n", "<br/>") if text else fallback
 
 
 def branded_pdf_header(document_label: str, document_number: str, styles: dict[str, ParagraphStyle]) -> Table:
@@ -5202,7 +5355,7 @@ def build_quote_pdf(quote: dict[str, Any]) -> bytes:
     story.extend([header, Spacer(1, 18)])
     customer = quote["customer"]
     bill_to = Paragraph(
-        f"<font size=8 color='{BRAND_BLUE}'>PREPARED FOR</font><br/><b>{customer['name']}</b><br/>{customer['address'].replace(chr(10), '<br/>')}<br/>{customer['phone']}<br/>{customer['email']}",
+        f"<font size=8 color='{BRAND_BLUE}'>PREPARED FOR</font><br/><b>{pdf_text(customer.get('name'))}</b><br/>{pdf_text(customer.get('address'))}<br/>{pdf_text(customer.get('phone'))}<br/>{pdf_text(customer.get('email'))}",
         styles["Small"],
     )
     details = Paragraph(
@@ -5215,17 +5368,17 @@ def build_quote_pdf(quote: dict[str, Any]) -> bytes:
     data = [[Paragraph("<b>IMAGE</b>", styles["Tiny"]), Paragraph("<b>PRODUCT / CONFIGURATION</b>", styles["Tiny"]), Paragraph("<b>QTY</b>", styles["Tiny"]), Paragraph("<b>UNIT</b>", styles["Tiny"]), Paragraph("<b>AMOUNT</b>", styles["Tiny"])]]
     for item in quote["items"]:
         description = (
-            f"<b>{item['name']}</b><br/>"
-            f"{item['width']:.1f}\" W x {item['height']:.1f}\" H | {item['direction']}<br/>"
-            f"{item['glass']} glass | {item['frame']} finish"
+            f"<b>{pdf_text(item.get('name'))}</b><br/>"
+            f"{float(item.get('width') or 0):.1f}\" W x {float(item.get('height') or 0):.1f}\" H | {pdf_text(item.get('direction'))}<br/>"
+            f"{pdf_text(item.get('glass'))} glass | {pdf_text(item.get('frame'))} finish"
         )
         color_label = item_color_label(item)
         if color_label:
-            description += f" | {color_label}"
+            description += f" | {pdf_text(color_label)}"
         if item.get("price_adjusted"):
             description += f"<br/><font color='#68736d'>Adjusted from {money(float(item.get('original_unit_price', item['unit_price'])))} / unit</font>"
         if item.get("notes"):
-            description += f"<br/><font color='#68736d'>Note: {item['notes']}</font>"
+            description += f"<br/><font color='#68736d'>Note: {pdf_text(item.get('notes'))}</font>"
         data.append([
             quote_item_thumbnail(item),
             Paragraph(description, styles["Small"]),
@@ -5419,11 +5572,6 @@ def build_receipt_pdf(
     return buffer.getvalue()
 
 
-def pdf_text(value: Any, fallback: str = "-") -> str:
-    text = str(value or "").strip()
-    return html.escape(text) if text else fallback
-
-
 def inch_to_mm(value: Any) -> int:
     try:
         return round(float(value or 0) * 25.4)
@@ -5605,10 +5753,10 @@ def build_factory_production_pdf(
 
 
 def save_quote(quote: dict[str, Any]) -> None:
-    with sqlite3.connect(DB_PATH) as conn:
+    with db_connect() as conn:
         conn.execute(
             """
-            INSERT OR REPLACE INTO quotes
+            INSERT INTO quotes
             (quote_number, created_at, customer_name, customer_email, customer_phone,
              customer_address, subtotal, tax, total, status, payload, customer_id)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -5706,6 +5854,14 @@ def checkout_page() -> None:
                 elif second_followup < first_followup:
                     st.error("Second follow-up should be on or after the first follow-up.")
                 else:
+                    final_adjustment_snapshot = st.session_state.get("checkout_quote_adjustments") or quote_adjustment_snapshot()
+                    subtotal = float(final_adjustment_snapshot["subtotal"])
+                    discount = float(final_adjustment_snapshot["discount"])
+                    discount_label = str(final_adjustment_snapshot.get("discount_label") or "Discount")
+                    installation_fee = float(final_adjustment_snapshot["installation_fee"])
+                    tax = float(final_adjustment_snapshot["tax"])
+                    total = float(final_adjustment_snapshot["total"])
+                    tax_rate_percent = float(final_adjustment_snapshot["tax_rate_percent"])
                     now = datetime.now()
                     customer_payload = {"name": name, "company": company, "email": email, "phone": phone, "address": address}
                     quote = {
@@ -5717,7 +5873,7 @@ def checkout_page() -> None:
                         "subtotal": subtotal,
                         "discount": discount,
                         "discount_label": discount_label,
-                        "tax_enabled": bool(adjustment_snapshot.get("tax_enabled", False)),
+                        "tax_enabled": bool(final_adjustment_snapshot.get("tax_enabled", False)),
                         "tax_rate": tax_rate_percent,
                         "installation_fee": installation_fee,
                         "tax": tax,
@@ -5794,7 +5950,7 @@ def checkout_page() -> None:
 def quotes_page() -> None:
     st.title("Saved quotes")
     st.caption("Quotes generated on this computer are stored in the local SQLite database.")
-    with sqlite3.connect(DB_PATH) as conn:
+    with db_connect() as conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
             """
@@ -6067,8 +6223,6 @@ def main() -> None:
         employee_login_page()
         st.markdown('<div class="footer">FRAMEFLOW · EMPLOYEE ACCESS REQUIRED</div>', unsafe_allow_html=True)
         return
-    if st.session_state.page in {"Admin", "About"}:
-        st.session_state.page = "Catalog"
     init_db()
     reload_products()
     normalize_existing_catalog_images()
@@ -6094,7 +6248,7 @@ def main() -> None:
     elif st.session_state.page == "Finance":
         finance_page()
     elif st.session_state.page == "Admin":
-        admin_page()
+        admin_page() if is_manager_user() else catalog_page()
     else:
         about_page()
     st.markdown('<div class="footer">FRAMEFLOW · INTERNAL TRADE PORTAL · PRICING SUBJECT TO FINAL REVIEW</div>', unsafe_allow_html=True)
