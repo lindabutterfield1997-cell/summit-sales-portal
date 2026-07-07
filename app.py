@@ -1142,17 +1142,17 @@ def phone_input_mask() -> None:
               input.addEventListener('input', () => {
                 const formatted = formatPhone(input.value);
                 if (input.value !== formatted) {
+                  const cursorAtEnd = input.selectionStart === input.value.length;
                   input.value = formatted;
-                  input.dispatchEvent(new Event('change', { bubbles: true }));
+                  if (cursorAtEnd) {
+                    input.setSelectionRange(input.value.length, input.value.length);
+                  }
                 }
               });
               input.addEventListener('blur', () => {
                 const formatted = formatPhone(input.value);
-                if (input.value !== formatted) {
-                  input.value = formatted;
-                  input.dispatchEvent(new Event('input', { bubbles: true }));
-                  input.dispatchEvent(new Event('change', { bubbles: true }));
-                }
+                if (input.value !== formatted) input.value = formatted;
+                input.dispatchEvent(new Event('change', { bubbles: true }));
               });
               if (input.value) {
                 const formatted = formatPhone(input.value);
