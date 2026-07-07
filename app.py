@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any, Sequence
 
 import streamlit as st
+import streamlit.components.v1 as components
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 from reportlab.lib import colors
 from reportlab.lib.enums import TA_LEFT, TA_RIGHT
@@ -1091,6 +1092,88 @@ def money(value: float) -> str:
     return f"${value:,.2f}"
 
 
+def phone_digits(value: Any) -> str:
+    return "".join(ch for ch in str(value or "") if ch.isdigit())
+
+
+def format_us_phone(value: Any) -> str:
+    raw = str(value or "").strip()
+    digits = phone_digits(raw)
+    if len(digits) == 11 and digits.startswith("1"):
+        digits = digits[1:]
+    if len(digits) == 10:
+        return f"({digits[:3]}) {digits[3:6]}-{digits[6:]}"
+    return raw
+
+
+def is_valid_us_phone(value: Any) -> bool:
+    digits = phone_digits(value)
+    if len(digits) == 11 and digits.startswith("1"):
+        digits = digits[1:]
+    return len(digits) == 10
+
+
+def phone_input_mask() -> None:
+    components.html(
+        """
+        <script>
+        (() => {
+          const formatPhone = (raw) => {
+            let digits = (raw || '').replace(/\\D/g, '');
+            if (digits.length === 11 && digits.startsWith('1')) digits = digits.slice(1);
+            digits = digits.slice(0, 10);
+            if (digits.length <= 3) return digits ? `(${digits}` : '';
+            if (digits.length <= 6) return `(${digits.slice(0, 3)}) ${digits.slice(3)}`;
+            return `(${digits.slice(0, 3)}) ${digits.slice(3, 6)}-${digits.slice(6)}`;
+          };
+
+          const markPhoneInputs = () => {
+            const doc = window.parent?.document || document;
+            const labels = Array.from(doc.querySelectorAll('label'));
+            labels.forEach((label) => {
+              const text = (label.innerText || '').trim().toLowerCase();
+              if (!text.startsWith('phone')) return;
+              const wrapper = label.closest('[data-testid="stWidgetLabel"]')?.parentElement || label.parentElement;
+              const input = wrapper?.querySelector('input');
+              if (!input || input.dataset.phoneMaskAttached === '1') return;
+              input.dataset.phoneMaskAttached = '1';
+              input.placeholder = '(123) 456-7890';
+              input.inputMode = 'numeric';
+              input.addEventListener('input', () => {
+                const formatted = formatPhone(input.value);
+                if (input.value !== formatted) {
+                  input.value = formatted;
+                  input.dispatchEvent(new Event('change', { bubbles: true }));
+                }
+              });
+              input.addEventListener('blur', () => {
+                const formatted = formatPhone(input.value);
+                if (input.value !== formatted) {
+                  input.value = formatted;
+                  input.dispatchEvent(new Event('input', { bubbles: true }));
+                  input.dispatchEvent(new Event('change', { bubbles: true }));
+                }
+              });
+              if (input.value) {
+                const formatted = formatPhone(input.value);
+                if (formatted && input.value !== formatted) input.value = formatted;
+              }
+            });
+          };
+
+          markPhoneInputs();
+          const doc = window.parent?.document || document;
+          const observer = new MutationObserver(markPhoneInputs);
+          observer.observe(doc.body, { childList: true, subtree: true });
+          setInterval(markPhoneInputs, 1000);
+        })();
+        </script>
+        """,
+        height=0,
+        width=0,
+    )
+
+
 def product_price_label(product: Product) -> str:
     if product.base_rate <= 0 and product.minimum_price <= 0:
         return "Price TBD"
@@ -1694,10 +1777,14 @@ def find_customer_by_contact(email: str, phone: str) -> sqlite3.Row | None:
             ).fetchone()
             if row:
                 return row
-        if phone.strip():
+        formatted_phone = format_us_phone(phone)
+        phone_values = tuple(value for value in {phone.strip(), formatted_phone} if value)
+        if phone_values:
+            placeholders = ",".join("?" for _ in phone_values)
+            params = (*phone_values, owner) if owner else phone_values
             return conn.execute(
-                f"SELECT * FROM customers WHERE phone = ? {owner_clause} ORDER BY updated_at DESC LIMIT 1",
-                (phone.strip(), owner) if owner else (phone.strip(),),
+                f"SELECT * FROM customers WHERE phone IN ({placeholders}) {owner_clause} ORDER BY updated_at DESC LIMIT 1",
+                params,
             ).fetchone()
     return None
 
@@ -2573,7 +2660,7 @@ def get_product_or_none(product_id: str) -> Product | None:
     return next((p for p in PRODUCTS if p.id == product_id), None)
 
 
-def price_product(product: Product, width_in: float, height_in: float, glass: str, frame: str) -> tuple[float, dict[str, float]]:
+def price_product_with_rate(product: Product, width_in: float, height_in: float, glass: str, frame: str, base_rate: float) -> tuple[float, dict[str, float]]:
     area_sqft = width_in * height_in / 144
     glass_factor = {
         "Low-E": 1.12,
@@ -2589,14 +2676,19 @@ def price_product(product: Product, width_in: float, height_in: float, glass: st
         "Mahogany": 1.16,
         "Oak": 1.08,
     }.get(frame, 1.0)
-    calculated = area_sqft * product.base_rate * glass_factor * frame_factor
+    calculated = area_sqft * float(base_rate) * glass_factor * frame_factor
     unit_price = max(calculated, product.minimum_price)
     return unit_price, {
         "area_sqft": area_sqft,
+        "base_rate": float(base_rate),
         "glass_factor": glass_factor,
         "frame_factor": frame_factor,
         "calculated": calculated,
     }
+
+
+def price_product(product: Product, width_in: float, height_in: float, glass: str, frame: str) -> tuple[float, dict[str, float]]:
+    return price_product_with_rate(product, width_in, height_in, glass, frame, product.base_rate)
 
 
 def legacy_label_map() -> dict[str, str]:
@@ -2768,6 +2860,48 @@ def sync_cart_item_price(item: dict[str, Any], unit_price: float) -> None:
     item["unit_price"] = float(unit_price)
     item["line_total"] = float(unit_price) * quantity
     item["price_adjusted"] = abs(float(unit_price) - original_unit) > 0.005
+    item["price_adjustment_mode"] = "unit" if item["price_adjusted"] else ""
+
+
+def update_cart_item_configuration(item: dict[str, Any], product: Product, width: float, height: float, quantity: int) -> bool:
+    width = float(width)
+    height = float(height)
+    quantity = int(quantity)
+    current_width = float(item.get("width") or 0.0)
+    current_height = float(item.get("height") or 0.0)
+    current_quantity = int(item.get("quantity") or 1)
+    if abs(current_width - width) < 0.001 and abs(current_height - height) < 0.001 and current_quantity == quantity:
+        return False
+
+    glass = str(item.get("glass") or (product.glass_colors[0] if product.glass_colors else ""))
+    frame = str(item.get("frame") or (product.frame_colors[0] if product.frame_colors else ""))
+    calculated_unit, breakdown = price_product(product, width, height, glass, frame)
+    sales_base_rate = float(item.get("sales_base_rate", product.base_rate) or product.base_rate)
+    sales_unit_from_rate, sales_breakdown = price_product_with_rate(product, width, height, glass, frame, sales_base_rate)
+    previous_unit = float(item.get("unit_price", calculated_unit) or calculated_unit)
+    adjustment_mode = str(item.get("price_adjustment_mode") or "")
+    was_unit_adjusted = bool(item.get("price_adjusted")) and adjustment_mode != "rate"
+
+    item["width"] = width
+    item["height"] = height
+    item["quantity"] = quantity
+    item["area_sqft"] = sales_breakdown["area_sqft"]
+    item["base_rate"] = product.base_rate
+    item["sales_base_rate"] = sales_base_rate
+    item["original_unit_price"] = calculated_unit
+    if adjustment_mode == "rate":
+        item["unit_price"] = sales_unit_from_rate
+        item["price_adjusted"] = abs(sales_base_rate - float(product.base_rate)) > 0.005
+    elif was_unit_adjusted:
+        item["unit_price"] = previous_unit
+        item["price_adjusted"] = abs(previous_unit - calculated_unit) > 0.005
+        item["price_adjustment_mode"] = "unit" if item["price_adjusted"] else ""
+    else:
+        item["unit_price"] = calculated_unit
+        item["price_adjusted"] = False
+        item["price_adjustment_mode"] = ""
+    item["line_total"] = float(item["unit_price"]) * quantity
+    return True
 
 
 def normalize_cart_item(item: dict[str, Any], index: int = 0) -> bool:
@@ -3161,7 +3295,7 @@ def upsert_customer_from_quote(
         "name": customer.get("name", "").strip(),
         "company": customer.get("company", "").strip(),
         "email": customer.get("email", "").strip(),
-        "phone": customer.get("phone", "").strip(),
+        "phone": format_us_phone(customer.get("phone", "")),
         "address": customer.get("address", "").strip(),
         "products_interest": ", ".join(dict.fromkeys(str(item.get("name", "")) for item in quote.get("items", []) if item.get("name"))),
         "client_type": row_value(existing, "client_type"),
@@ -3227,7 +3361,7 @@ def customer_editor(existing: sqlite3.Row | None = None, form_key: str = "custom
             name = st.text_input("Customer name *", value=existing["name"] if is_edit else "")
             company = st.text_input("Company", value=existing["company"] if is_edit else "")
             email = st.text_input("Email", value=existing["email"] if is_edit else "")
-            phone = st.text_input("Phone", value=existing["phone"] if is_edit else "")
+            phone = st.text_input("Phone", value=format_us_phone(existing["phone"]) if is_edit else "", placeholder="(123) 456-7890", help="Enter a 10-digit US phone number. It will be saved as (123) 456-7890.")
         with identity2:
             priority = st.selectbox(
                 "Priority",
@@ -3425,7 +3559,7 @@ def customer_editor(existing: sqlite3.Row | None = None, form_key: str = "custom
                 "name": name.strip(),
                 "company": company.strip(),
                 "email": email.strip(),
-                "phone": phone.strip(),
+                "phone": format_us_phone(phone),
                 "address": address.strip(),
                 "products_interest": products_interest.strip(),
                 "client_type": client_type,
@@ -3537,7 +3671,7 @@ def render_customer_basic_info_editor(row: sqlite3.Row) -> None:
             name = st.text_input("Customer name *", value=row["name"] or "")
             email = st.text_input("Email", value=row["email"] or "")
         with basic2:
-            phone = st.text_input("Phone", value=row["phone"] or "")
+            phone = st.text_input("Phone", value=format_us_phone(row["phone"]) or "", placeholder="(123) 456-7890", help="Enter a 10-digit US phone number. It will be saved as (123) 456-7890.")
             client_type_options = ("", *CLIENT_TYPES)
             client_type = st.selectbox(
                 "Client type",
@@ -3612,7 +3746,7 @@ def render_customer_basic_info_editor(row: sqlite3.Row) -> None:
                 {
                     "name": name.strip(),
                     "email": email.strip(),
-                    "phone": phone.strip(),
+                    "phone": format_us_phone(phone),
                     "company": company.strip(),
                     "address": address.strip(),
                     "source": source.strip(),
@@ -4880,7 +5014,7 @@ def configure_page(product: Product) -> None:
             quick1, quick2 = st.columns(2)
             with quick1:
                 quick_name = st.text_input("Customer name *", key="quick-customer-name")
-                quick_phone = st.text_input("Phone", key="quick-customer-phone")
+                quick_phone = st.text_input("Phone", placeholder="(123) 456-7890", help="Enter a 10-digit US phone number. It will be saved as (123) 456-7890.", key="quick-customer-phone")
                 quick_email = st.text_input("Email", key="quick-customer-email")
             with quick2:
                 quick_company = st.text_input("Company", key="quick-customer-company")
@@ -4890,6 +5024,9 @@ def configure_page(product: Product) -> None:
             if submitted_customer:
                 if not quick_name.strip():
                     st.error("Customer name is required.")
+                    return
+                if quick_phone.strip() and not is_valid_us_phone(quick_phone):
+                    st.error("Please enter a 10-digit US phone number, for example (123) 456-7890.")
                     return
                 current_cart = list(st.session_state.cart)
                 had_active_customer = bool(st.session_state.active_customer_id)
@@ -4901,7 +5038,7 @@ def configure_page(product: Product) -> None:
                         "name": quick_name.strip(),
                         "company": quick_company.strip(),
                         "email": quick_email.strip(),
-                        "phone": quick_phone.strip(),
+                        "phone": format_us_phone(quick_phone),
                         "address": quick_address.strip(),
                         "products_interest": product.name,
                         "client_type": "",
@@ -5006,10 +5143,12 @@ def configure_page(product: Product) -> None:
         st.markdown(f'<div class="eyebrow">{product.category} · {product.id}</div>', unsafe_allow_html=True)
         st.title(product.name)
         st.write(product.description)
-        st.markdown(
-            f'<div style="font-weight:700;color:#2e4338;margin:8px 0 18px">{product_price_label(product)}</div>',
-            unsafe_allow_html=True,
-        )
+        sales_base_rate = float(product.base_rate)
+        if product.base_rate <= 0:
+            st.markdown(
+                f'<div style="font-weight:700;color:#2e4338;margin:8px 0 18px">{product_price_label(product)}</div>',
+                unsafe_allow_html=True,
+            )
         st.markdown("#### Configuration")
         hide_opening_and_glass = product.id == "AC-100" or product.name.strip().lower() == "roller screen"
         direction = st.session_state[f"config-{product.id}-direction"]
@@ -5037,16 +5176,37 @@ def configure_page(product: Product) -> None:
         quantity = st.number_input("Quantity", min_value=1, max_value=99, key=f"config-{product.id}-quantity")
         notes = st.text_area("Item notes", placeholder="Hardware, project room, special requirements…", key=f"config-{product.id}-notes")
         unit_price, breakdown = price_product(product, width, height, glass, frame)
+        if product.base_rate > 0:
+            rate_info_col, rate_input_col = st.columns([0.8, 1.2], vertical_alignment="bottom")
+            with rate_info_col:
+                st.caption(f"Company base price: {money(product.base_rate)}/sq ft")
+            with rate_input_col:
+                rate_key = f"config-{product.id}-sales-rate"
+                rate_sync_key = f"config-{product.id}-sales-rate-base"
+                if st.session_state.get(rate_sync_key) != float(product.base_rate):
+                    st.session_state[rate_key] = float(product.base_rate)
+                    st.session_state[rate_sync_key] = float(product.base_rate)
+                sales_base_rate = st.number_input(
+                    "Sales price ($/sq ft)",
+                    min_value=0.0,
+                    step=1.0,
+                    key=rate_key,
+                    help="Company standard price is shown on the left. If approved, adjust this sales price per square foot for this quote.",
+                )
+        sales_unit_price, sales_breakdown = price_product_with_rate(product, width, height, glass, frame, sales_base_rate)
+        price_adjusted_by_rate = abs(float(sales_base_rate) - float(product.base_rate)) > 0.005
         st.markdown(
             f"""
             <div style="background:#edf1ed;padding:16px;border-radius:12px;margin:10px 0">
-              <span style="color:#65706a;font-size:12px">ESTIMATED UNIT PRICE</span>
-              <div style="font-size:28px;font-weight:700;color:#203128">{money(unit_price)}</div>
-              <span style="color:#65706a;font-size:12px">{breakdown['area_sqft']:.2f} sq ft · minimum pricing may apply</span>
+              <span style="color:#65706a;font-size:12px">CALCULATED PRICE</span>
+              <div style="font-size:28px;font-weight:700;color:#203128">{money(sales_unit_price)}</div>
+              <span style="color:#65706a;font-size:12px">{sales_breakdown['area_sqft']:.2f} sq ft × {money(sales_base_rate)}/sq ft</span>
             </div>
             """,
             unsafe_allow_html=True,
         )
+        if price_adjusted_by_rate:
+            st.caption(f"Company base calculation: {money(unit_price)} at {money(product.base_rate)}/sq ft.")
         configuration_stock_panel(product, width, height, color, glass, frame, direction, int(quantity))
         if st.button("Add to cart", type="primary", width="stretch", key=f"add-cart-{product.id}"):
             item = {
@@ -5061,10 +5221,14 @@ def configure_page(product: Product) -> None:
                 "width": width,
                 "height": height,
                 "quantity": int(quantity),
+                "area_sqft": breakdown["area_sqft"],
+                "base_rate": product.base_rate,
+                "sales_base_rate": sales_base_rate,
                 "original_unit_price": unit_price,
-                "unit_price": unit_price,
-                "line_total": unit_price * quantity,
-                "price_adjusted": False,
+                "unit_price": sales_unit_price,
+                "line_total": sales_unit_price * quantity,
+                "price_adjusted": price_adjusted_by_rate,
+                "price_adjustment_mode": "rate" if price_adjusted_by_rate else "",
                 "notes": notes,
             }
             merged = add_or_merge_cart_item(item)
@@ -5152,6 +5316,39 @@ def cart_page() -> None:
                     color_label = item_color_label(item)
                     color_line = f" · {color_label}" if color_label else ""
                     st.markdown(f"**{item['name']}**  \n{item['width']:.1f}\" W × {item['height']:.1f}\" H · {item['direction']}  \n{item['glass']} glass · {item['frame']} finish{color_line} · Qty {item['quantity']}")
+                    edit_state_key = f"cart-edit-{line_id}"
+                    if st.session_state.get(edit_state_key, False):
+                        edit_width_col, edit_height_col, edit_qty_col = st.columns([1, 1, 0.8])
+                        with edit_width_col:
+                            cart_width = st.number_input(
+                                "Width (inches)",
+                                min_value=12.0,
+                                max_value=360.0,
+                                value=float(item.get("width") or 12.0),
+                                step=0.5,
+                                key=f"cart-width-{line_id}",
+                            )
+                        with edit_height_col:
+                            cart_height = st.number_input(
+                                "Height (inches)",
+                                min_value=12.0,
+                                max_value=240.0,
+                                value=float(item.get("height") or 12.0),
+                                step=0.5,
+                                key=f"cart-height-{line_id}",
+                            )
+                        with edit_qty_col:
+                            cart_quantity = st.number_input(
+                                "Qty",
+                                min_value=1,
+                                max_value=99,
+                                value=int(item.get("quantity") or 1),
+                                step=1,
+                                key=f"cart-qty-{line_id}",
+                            )
+                        if update_cart_item_configuration(item, product, cart_width, cart_height, int(cart_quantity)):
+                            save_customer_cart(st.session_state.active_customer_id)
+                            st.rerun()
                     stock_label, stock_color = inventory_status_text(
                         str(item.get("product_id") or ""),
                         requested=int(item.get("quantity") or 1),
@@ -5161,17 +5358,25 @@ def cart_page() -> None:
                     if item["notes"]:
                         st.caption(item["notes"])
                     price_col, total_col, reset_col = st.columns([1, 1, 0.8], vertical_alignment="bottom")
+                    price_widget_key = f"unit-price-{line_id}"
+                    price_sync_key = f"unit-price-sync-{line_id}"
+                    item_unit_price = float(item.get("unit_price", 0.0) or 0.0)
+                    last_synced_price = float(st.session_state.get(price_sync_key, item_unit_price) or 0.0)
+                    widget_price = st.session_state.get(price_widget_key)
+                    if widget_price is None or (abs(last_synced_price - item_unit_price) > 0.005 and abs(float(widget_price or 0.0) - last_synced_price) <= 0.005):
+                        st.session_state[price_widget_key] = item_unit_price
+                    st.session_state[price_sync_key] = item_unit_price
                     with price_col:
                         adjusted_unit = st.number_input(
                             "Unit price for quote",
                             min_value=0.0,
-                            value=float(item.get("unit_price", 0.0) or 0.0),
                             step=10.0,
-                            key=f"unit-price-{line_id}",
+                            key=price_widget_key,
                             help="Adjust this item only. The PDF quote will use this price.",
                         )
                     if adjusted_unit != float(item.get("unit_price", 0.0) or 0.0):
                         sync_cart_item_price(item, adjusted_unit)
+                        st.session_state[price_sync_key] = float(adjusted_unit)
                         save_customer_cart(st.session_state.active_customer_id)
                     with total_col:
                         st.markdown(f"**Line total**  \n{money(float(item['line_total']))}")
@@ -5183,6 +5388,11 @@ def cart_page() -> None:
                     if item.get("price_adjusted"):
                         st.caption(f"Original calculated unit price: {money(float(item.get('original_unit_price', 0.0)))}")
                 with action:
+                    edit_state_key = f"cart-edit-{line_id}"
+                    edit_label = "Done" if st.session_state.get(edit_state_key, False) else "Edit"
+                    if st.button(edit_label, key=f"edit-{line_id}", type="secondary"):
+                        st.session_state[edit_state_key] = not st.session_state.get(edit_state_key, False)
+                        st.rerun()
                     if st.button("Remove", key=f"remove-{line_id}", type="tertiary"):
                         st.session_state.cart.pop(index)
                         save_customer_cart(st.session_state.active_customer_id)
@@ -5838,7 +6048,7 @@ def checkout_page() -> None:
             name = st.text_input("Customer name *", value=active_customer["name"] if active_customer else "")
             company = st.text_input("Company", value=active_customer["company"] if active_customer else "")
             email = st.text_input("Email *", value=active_customer["email"] if active_customer else "")
-            phone = st.text_input("Phone *", value=active_customer["phone"] if active_customer else "")
+            phone = st.text_input("Phone *", value=format_us_phone(active_customer["phone"]) if active_customer else "", placeholder="(123) 456-7890", help="Enter a 10-digit US phone number. It will be saved as (123) 456-7890.")
             address = st.text_area("Project / delivery address *", value=active_customer["address"] if active_customer else "")
             project_notes = st.text_area("Project notes")
             follow1, follow2 = st.columns(2)
@@ -5851,6 +6061,8 @@ def checkout_page() -> None:
             if create:
                 if not name or "@" not in email or not phone or not address:
                     st.error("Please complete the required customer fields and enter a valid email.")
+                elif not is_valid_us_phone(phone):
+                    st.error("Please enter a 10-digit US phone number, for example (123) 456-7890.")
                 elif second_followup < first_followup:
                     st.error("Second follow-up should be on or after the first follow-up.")
                 else:
@@ -5863,7 +6075,7 @@ def checkout_page() -> None:
                     total = float(final_adjustment_snapshot["total"])
                     tax_rate_percent = float(final_adjustment_snapshot["tax_rate_percent"])
                     now = datetime.now()
-                    customer_payload = {"name": name, "company": company, "email": email, "phone": phone, "address": address}
+                    customer_payload = {"name": name, "company": company, "email": email, "phone": format_us_phone(phone), "address": address}
                     quote = {
                         "quote_number": quote_number(),
                         "created_at": now.strftime("%B %d, %Y"),
@@ -6223,6 +6435,7 @@ def main() -> None:
         employee_login_page()
         st.markdown('<div class="footer">FRAMEFLOW · EMPLOYEE ACCESS REQUIRED</div>', unsafe_allow_html=True)
         return
+    phone_input_mask()
     init_db()
     reload_products()
     normalize_existing_catalog_images()
