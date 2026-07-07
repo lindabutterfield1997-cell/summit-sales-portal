@@ -1711,9 +1711,9 @@ def customer_rows(status: str | None = None, search: str = "") -> list[sqlite3.R
             "lower(phone) LIKE ? OR lower(address) LIKE ? OR lower(products_interest) LIKE ? OR "
             "lower(client_type) LIKE ? OR lower(project_type) LIKE ? OR lower(use_case) LIKE ? OR "
             "lower(area_zip) LIKE ? OR lower(showroom_status) LIKE ? OR lower(answer_status) LIKE ? OR "
-            "lower(wishlist) LIKE ?)"
+            "lower(assigned_to) LIKE ? OR lower(wishlist) LIKE ?)"
         )
-        params.extend([like] * 13)
+        params.extend([like] * 14)
     if clauses:
         query += " WHERE " + " AND ".join(clauses)
     query += """
@@ -3085,6 +3085,24 @@ def update_customer_basic_info(customer_id: int, data: dict[str, Any]) -> None:
     )
 
 
+def update_customer_owner(customer_id: int, assigned_to: str, previous_owner: str = "") -> None:
+    assigned_to = assigned_to.strip()
+    now = datetime.now().isoformat(timespec="seconds")
+    with db_connect() as conn:
+        conn.execute(
+            "UPDATE customers SET assigned_to = ?, updated_at = ? WHERE id = ?",
+            (assigned_to, now, customer_id),
+        )
+    from_label = previous_owner or "Unassigned"
+    to_label = assigned_to or "Unassigned"
+    add_customer_timeline_event(
+        customer_id,
+        date.today(),
+        "Sales rep reassigned",
+        f"Customer owner changed from {from_label} to {to_label}.",
+    )
+
+
 def update_customer_payment_schedule(
     customer_id: int,
     first_payment_date: date,
@@ -3766,9 +3784,34 @@ def render_customer_basic_info_editor(row: sqlite3.Row) -> None:
 
 def customer_card(row: sqlite3.Row) -> None:
     priority_color = {"High": "#b42318", "Medium": "#9a6700", "Low": "#2e6b45"}.get(row["priority"], "#68736d")
-    title = f"{row['name']} · {customer_title_detail(row)}"
+    owner_title = f" ｜ {row_value(row, 'assigned_to') or 'Unassigned'}" if is_manager_user() else ""
+    title = f"{row['name']} ｜ {customer_title_detail(row)}{owner_title}"
     is_inline_editing = st.session_state.get("inline_customer_editor_id") == int(row["id"])
     with st.expander(title, expanded=is_inline_editing):
+        if is_manager_user():
+            owner_options = customer_owner_options(row_value(row, "assigned_to"))
+            owner_col, assign_col, save_owner_col = st.columns([1.1, 1.2, 0.7], vertical_alignment="bottom")
+            with owner_col:
+                st.markdown(f"**Sales rep:** {row_value(row, 'assigned_to') or 'Unassigned'}")
+            with assign_col:
+                selected_owner = st.selectbox(
+                    "Assign sales rep",
+                    owner_options,
+                    index=option_index(owner_options, row_value(row, "assigned_to") or SALES_ACCOUNTS[-1]),
+                    key=f"assign-owner-{row['id']}",
+                )
+            with save_owner_col:
+                if st.button(
+                    "Save owner",
+                    key=f"save-owner-{row['id']}",
+                    disabled=selected_owner == (row_value(row, "assigned_to") or ""),
+                    width="stretch",
+                ):
+                    update_customer_owner(int(row["id"]), selected_owner, row_value(row, "assigned_to"))
+                    st.success(f"Customer assigned to {selected_owner}.")
+                    st.rerun()
+            st.divider()
+
         if is_inline_editing:
             render_customer_basic_info_editor(row)
         else:
@@ -4014,6 +4057,8 @@ def customers_page() -> None:
                             f"Next follow-up: {display_date(row['next_followup_date'])}",
                             unsafe_allow_html=True,
                         )
+                        if is_manager_user():
+                            st.write(f"**Sales rep:** {row['assigned_to'] or 'Unassigned'}")
                         st.write(f"**Contact:** {row['phone'] or row['email'] or 'No contact'}")
                         st.write(f"**Stage:** {row['followup_stage'] or 'Not set'}")
             with right:
@@ -4022,7 +4067,8 @@ def customers_page() -> None:
                     st.success("No installation reminders due today.")
                 for row in due_installs:
                     label, _ = due_label(row["install_followup_date"])
-                    st.write(f"**{row['name']}** · {label} · {row['install_status'] or 'Not set'}")
+                    owner_suffix = f" · Sales rep: {row['assigned_to'] or 'Unassigned'}" if is_manager_user() else ""
+                    st.write(f"**{row['name']}** · {label} · {row['install_status'] or 'Not set'}{owner_suffix}")
     with following_tab:
         following = [row for row in rows if row["status"] == "Following"]
         if not following:
