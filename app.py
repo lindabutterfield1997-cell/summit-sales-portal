@@ -6481,7 +6481,8 @@ def main() -> None:
         employee_login_page()
         st.markdown('<div class="footer">FRAMEFLOW · EMPLOYEE ACCESS REQUIRED</div>', unsafe_allow_html=True)
         return
-    phone_input_mask()
+    # Phone numbers are formatted on save/quote generation.
+    # The live browser mask is disabled because it can interrupt Streamlit text input.
     init_db()
     reload_products()
     normalize_existing_catalog_images()
