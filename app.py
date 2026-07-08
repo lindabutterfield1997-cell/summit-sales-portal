@@ -3279,6 +3279,100 @@ def delete_customer(customer_id: int) -> None:
         st.session_state.inline_customer_editor_id = None
 
 
+ZIP_CITY_PREFIXES = {
+    "900": "Los Angeles",
+    "901": "Los Angeles",
+    "902": "Beverly Hills",
+    "903": "Inglewood",
+    "904": "Santa Monica",
+    "905": "Torrance",
+    "906": "Whittier",
+    "907": "Long Beach",
+    "908": "Long Beach",
+    "910": "Pasadena",
+    "911": "Pasadena",
+    "912": "Glendale",
+    "913": "San Fernando Valley",
+    "914": "Van Nuys",
+    "915": "Burbank",
+    "916": "North Hollywood",
+    "917": "Ontario",
+    "918": "Alhambra",
+    "919": "San Diego",
+    "920": "San Diego",
+    "921": "San Diego",
+    "922": "Palm Springs",
+    "923": "San Bernardino",
+    "924": "San Bernardino",
+    "925": "Riverside",
+    "926": "Irvine",
+    "927": "Santa Ana",
+    "928": "Anaheim",
+    "930": "Ventura",
+    "931": "Santa Barbara",
+    "932": "Bakersfield",
+    "933": "Bakersfield",
+    "934": "San Luis Obispo",
+    "935": "Lancaster",
+    "936": "Fresno",
+    "937": "Fresno",
+    "938": "Fresno",
+    "939": "Salinas",
+    "940": "San Mateo",
+    "941": "San Francisco",
+    "943": "Palo Alto",
+    "944": "San Mateo",
+    "945": "Oakland",
+    "946": "Oakland",
+    "947": "Berkeley",
+    "948": "Richmond",
+    "949": "Marin",
+    "950": "San Jose",
+    "951": "San Jose",
+    "952": "Stockton",
+    "953": "Modesto",
+    "954": "Santa Rosa",
+    "955": "Eureka",
+    "956": "Sacramento",
+    "957": "Sacramento",
+    "958": "Sacramento",
+    "959": "Chico",
+    "960": "Redding",
+}
+
+
+def city_from_address(value: str) -> str:
+    text_value = " ".join(str(value or "").replace("\n", ", ").split())
+    if not text_value:
+        return ""
+    parts = [part.strip() for part in text_value.split(",") if part.strip()]
+    if len(parts) >= 3 and re.search(r"\b[A-Z]{2}\b|California", parts[-1], re.IGNORECASE):
+        return parts[-2].title()
+    match = re.search(r"([A-Za-z][A-Za-z .'-]+?)\s*,\s*(?:CA|California)\s+\d{5}(?:-\d{4})?", text_value, re.IGNORECASE)
+    if match:
+        return match.group(1).strip().title()
+    return ""
+
+
+def city_from_zip(value: str) -> str:
+    match = re.search(r"\b(\d{5})(?:-\d{4})?\b", str(value or ""))
+    if not match:
+        return ""
+    return ZIP_CITY_PREFIXES.get(match.group(1)[:3], "")
+
+
+def customer_city_label(row: sqlite3.Row) -> str:
+    address = row_value(row, "address")
+    city = city_from_address(address)
+    if city:
+        return city
+    for value in (row_value(row, "area_zip"), address):
+        city = city_from_zip(value)
+        if city:
+            return city
+    return ""
+
+
 def customer_title_detail(row: sqlite3.Row) -> str:
     if row["status"] == "Following":
         return row["followup_stage"] or "New lead"
@@ -3784,8 +3878,10 @@ def render_customer_basic_info_editor(row: sqlite3.Row) -> None:
 
 def customer_card(row: sqlite3.Row) -> None:
     priority_color = {"High": "#b42318", "Medium": "#9a6700", "Low": "#2e6b45"}.get(row["priority"], "#68736d")
+    city_label = customer_city_label(row)
+    city_title = f" ｜ {city_label}" if city_label else ""
     owner_title = f" ｜ {row_value(row, 'assigned_to') or 'Unassigned'}" if is_manager_user() else ""
-    title = f"{row['name']} ｜ {customer_title_detail(row)}{owner_title}"
+    title = f"{row['name']}{city_title} ｜ {customer_title_detail(row)}{owner_title}"
     is_inline_editing = st.session_state.get("inline_customer_editor_id") == int(row["id"])
     with st.expander(title, expanded=is_inline_editing):
         if is_manager_user():
@@ -5631,8 +5727,6 @@ def build_quote_pdf(quote: dict[str, Any]) -> bytes:
         color_label = item_color_label(item)
         if color_label:
             description += f" | {pdf_text(color_label)}"
-        if item.get("price_adjusted"):
-            description += f"<br/><font color='#68736d'>Adjusted from {money(float(item.get('original_unit_price', item['unit_price'])))} / unit</font>"
         if item.get("notes"):
             description += f"<br/><font color='#68736d'>Note: {pdf_text(item.get('notes'))}</font>"
         data.append([
@@ -5663,10 +5757,15 @@ def build_quote_pdf(quote: dict[str, Any]) -> bytes:
     installation_amount = float(quote.get("installation_fee", 0.0) or 0.0)
     total_rows = [
         ["Subtotal", money(quote["subtotal"])],
-        [quote.get("discount_label") or "Discount", f"-{money(discount_amount)}" if discount_amount else money(0)],
-        [f"Sales tax ({float(quote.get('tax_rate', 0.0) or 0.0):.2f}%)", money(tax_amount)],
-        ["Installation", money(installation_amount)],
     ]
+    if discount_amount > 0:
+        total_rows.append([quote.get("discount_label") or "Discount", f"-{money(discount_amount)}"])
+    total_rows.extend(
+        [
+            [f"Sales tax ({float(quote.get('tax_rate', 0.0) or 0.0):.2f}%)", money(tax_amount)],
+            ["Installation", money(installation_amount)],
+        ]
+    )
     total_rows.extend(
         [
             [Paragraph("<b>ESTIMATED TOTAL</b>", styles["Small"]), Paragraph(f"<b>{money(quote['total'])}</b>", styles["RightSmall"])],
