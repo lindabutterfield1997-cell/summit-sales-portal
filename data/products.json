@@ -1,23 +1,20 @@
 [
   {
-    "id": "BD-620",
-    "section": "Doors",
-    "category": "Bifold Door",
-    "name": "75 Series Aluminum Door - 5 Panel",
-    "subtitle": "Left stack presentation",
-    "description": "Thermally insulated aluminum bifold door system with black frame, large glass panels, and indoor-outdoor opening capability.",
-    "base_rate": 50.0,
+    "id": "AC-200",
+    "section": "Accessories",
+    "category": "Accessories",
+    "name": "Door Blind",
+    "subtitle": "Adjustable privacy blind",
+    "description": "Door blind accessory with horizontal slats for privacy, light control, and a clean integrated door appearance.",
+    "base_rate": 15.0,
     "minimum_price": 0.0,
     "directions": [
-      "Stack left",
-      "Stack right",
-      "Split stack"
+      "Left opening",
+      "Right opening",
+      "Center open"
     ],
     "glass_colors": [
-      "Clear",
-      "Low-E",
-      "Grey",
-      "Bronze"
+      "Blind slats"
     ],
     "frame_colors": [
       "Black",
@@ -25,27 +22,66 @@
       "Charcoal",
       "Bronze"
     ],
-    "accent": "#4f5b58",
-    "hero_image": "uploads/bd-620-summit-thermal-bifold-door.webp",
+    "accent": "#4f4b45",
+    "hero_image": "uploads/ac-200-door-blind.webp",
     "detail_images": [
-      "uploads/bd-620-summit-thermal-bifold-door.webp"
+      "uploads/ac-200-door-blind.webp"
     ],
     "active": true,
-    "updated_at": "2026-06-30T14:15:00",
+    "updated_at": "2026-07-06T13:47",
     "color_options": [
-      "Stack right",
-      "Stack left"
+      "Black",
+      "White",
+      "Charcoal",
+      "Bronze"
     ],
     "color_information": "",
     "stock_information": ""
   },
   {
-    "id": "BD-630",
+    "id": "AC-100",
+    "section": "Accessories",
+    "category": "Accessories",
+    "name": "Roller Screen",
+    "subtitle": "Exterior screen accessory",
+    "description": "Exterior roller screen accessory for door and window openings, designed to support ventilation while helping keep insects out.",
+    "base_rate": 15.0,
+    "minimum_price": 0.0,
+    "directions": [
+      "Exterior mount",
+      "Interior mount"
+    ],
+    "glass_colors": [
+      "Screen mesh"
+    ],
+    "frame_colors": [
+      "Black",
+      "White",
+      "Charcoal",
+      "Bronze"
+    ],
+    "accent": "#4f5b58",
+    "hero_image": "uploads/ac-100-roller-screen.webp",
+    "detail_images": [
+      "uploads/ac-100-roller-screen.webp"
+    ],
+    "active": true,
+    "updated_at": "2026-07-03T17:28",
+    "color_options": [
+      "Stack right",
+      "Stack left",
+      "Center open"
+    ],
+    "color_information": "",
+    "stock_information": ""
+  },
+  {
+    "id": "BD-680-4P",
     "section": "Doors",
     "category": "Bifold Door",
-    "name": "75 Series Aluminum Door - 3+1 Panel",
-    "subtitle": "Wide opening presentation",
-    "description": "Thermally insulated aluminum bifold door system with black frame, large glass panels, and indoor-outdoor opening capability.",
+    "name": "68 Series Aluminum Door - 4 Panel",
+    "subtitle": "Four-panel bifold system",
+    "description": "68 series aluminum bifold door system with four folding panels, black frame, large glass panels, and a clean full-frame opening.",
     "base_rate": 50.0,
     "minimum_price": 0.0,
     "directions": [
@@ -66,12 +102,13 @@
       "Bronze"
     ],
     "accent": "#4f5b58",
-    "hero_image": "uploads/bd-630-summit-thermal-bifold-door.webp",
+    "hero_image": "uploads/bifold-door-remove-left-panel-4-panel-v4-3x2.webp",
     "detail_images": [
-      "uploads/bd-630-summit-thermal-bifold-door.webp"
+      "uploads/bifold-door-remove-left-panel-4-panel-v4-3x2.webp",
+      "uploads/bifold-door-remove-left-panel-4-panel-v4-edited.webp"
     ],
     "active": true,
-    "updated_at": "2026-06-30T14:15:00",
+    "updated_at": "2026-07-01T15:45:00",
     "color_options": [
       "Black",
       "White",
@@ -126,12 +163,12 @@
     "stock_information": ""
   },
   {
-    "id": "BD-680-4P",
+    "id": "BD-630",
     "section": "Doors",
     "category": "Bifold Door",
-    "name": "68 Series Aluminum Door - 4 Panel",
-    "subtitle": "Four-panel bifold system",
-    "description": "68 series aluminum bifold door system with four folding panels, black frame, large glass panels, and a clean full-frame opening.",
+    "name": "75 Series Aluminum Door - 3+1 Panel",
+    "subtitle": "Wide opening presentation",
+    "description": "Thermally insulated aluminum bifold door system with black frame, large glass panels, and indoor-outdoor opening capability.",
     "base_rate": 50.0,
     "minimum_price": 0.0,
     "directions": [
@@ -152,13 +189,94 @@
       "Bronze"
     ],
     "accent": "#4f5b58",
-    "hero_image": "uploads/bifold-door-remove-left-panel-4-panel-v4-3x2.webp",
+    "hero_image": "uploads/bd-630-summit-thermal-bifold-door.webp",
     "detail_images": [
-      "uploads/bifold-door-remove-left-panel-4-panel-v4-3x2.webp",
-      "uploads/bifold-door-remove-left-panel-4-panel-v4-edited.webp"
+      "uploads/bd-630-summit-thermal-bifold-door.webp"
     ],
     "active": true,
-    "updated_at": "2026-07-01T15:45:00",
+    "updated_at": "2026-06-30T14:15:00",
+    "color_options": [
+      "Black",
+      "White",
+      "Charcoal",
+      "Bronze"
+    ],
+    "color_information": "",
+    "stock_information": ""
+  },
+  {
+    "id": "BD-620",
+    "section": "Doors",
+    "category": "Bifold Door",
+    "name": "75 Series Aluminum Door - 5 Panel",
+    "subtitle": "Left stack presentation",
+    "description": "Thermally insulated aluminum bifold door system with black frame, large glass panels, and indoor-outdoor opening capability.",
+    "base_rate": 50.0,
+    "minimum_price": 0.0,
+    "directions": [
+      "Stack left",
+      "Stack right",
+      "Split stack"
+    ],
+    "glass_colors": [
+      "Clear",
+      "Low-E",
+      "Grey",
+      "Bronze"
+    ],
+    "frame_colors": [
+      "Black",
+      "White",
+      "Charcoal",
+      "Bronze"
+    ],
+    "accent": "#4f5b58",
+    "hero_image": "uploads/bd-620-summit-thermal-bifold-door.webp",
+    "detail_images": [
+      "uploads/bd-620-summit-thermal-bifold-door.webp"
+    ],
+    "active": true,
+    "updated_at": "2026-06-30T14:15:00",
+    "color_options": [
+      "Stack right",
+      "Stack left"
+    ],
+    "color_information": "",
+    "stock_information": ""
+  },
+  {
+    "id": "BD-750-3PLUS3",
+    "section": "Doors",
+    "category": "Bifold Door",
+    "name": "75 Series Aluminum Door - 3+3 Panel",
+    "subtitle": "Three plus three split-stack bifold system",
+    "description": "75 series aluminum bifold door system with a 3+3 split-stack configuration, black frame, large glass panels, and a wide center opening.",
+    "base_rate": 50.0,
+    "minimum_price": 0.0,
+    "directions": [
+      "Stack left",
+      "Stack right",
+      "Split stack"
+    ],
+    "glass_colors": [
+      "Clear",
+      "Low-E",
+      "Grey",
+      "Bronze"
+    ],
+    "frame_colors": [
+      "Black",
+      "White",
+      "Charcoal",
+      "Bronze"
+    ],
+    "accent": "#4f5b58",
+    "hero_image": "uploads/bd-750-6-plus-6-panel-3x2.webp",
+    "detail_images": [
+      "uploads/bd-750-6-plus-6-panel-3x2.webp"
+    ],
+    "active": true,
+    "updated_at": "2026-07-09T15:50:00",
     "color_options": [
       "Black",
       "White",
@@ -2135,24 +2253,23 @@
     "stock_information": ""
   },
   {
-    "id": "BW-750-4P",
+    "id": "AW-620",
     "section": "Windows",
-    "category": "Bifold Window",
-    "name": "75 Series Aluminum Window - 3+1 Panel",
-    "subtitle": "3+1 panel bifold window system",
-    "description": "75 series aluminum bifold window system with a 3+1 panel layout, black frame, large glass panels, and indoor-outdoor serving capability.",
-    "base_rate": 148.0,
-    "minimum_price": 1700.0,
+    "category": "Awning Window",
+    "name": "Awning Window",
+    "subtitle": "Outward top-hinged ventilation",
+    "description": "Awning window with black frame and outward opening sash for controlled ventilation.",
+    "base_rate": 104.0,
+    "minimum_price": 680.0,
     "directions": [
-      "Stack left",
-      "Stack right",
-      "Split stack"
+      "Top hinged outward"
     ],
     "glass_colors": [
       "Clear",
       "Low-E",
       "Grey",
-      "Bronze"
+      "Bronze",
+      "Frosted"
     ],
     "frame_colors": [
       "Black",
@@ -2160,13 +2277,13 @@
       "Charcoal",
       "Bronze"
     ],
-    "accent": "#4f5b58",
-    "hero_image": "uploads/bw-750-4p-75-series-aluminum-window.webp",
+    "accent": "#5f6865",
+    "hero_image": "uploads/aw-620-awning-window.webp",
     "detail_images": [
-      "uploads/bw-750-4p-75-series-aluminum-window.webp"
+      "uploads/aw-620-awning-window.webp"
     ],
     "active": true,
-    "updated_at": "2026-07-02T16:19",
+    "updated_at": "2026-07-03T20:34",
     "color_options": [
       "Black",
       "White",
@@ -2219,6 +2336,48 @@
     "stock_information": ""
   },
   {
+    "id": "BW-750-4P",
+    "section": "Windows",
+    "category": "Bifold Window",
+    "name": "75 Series Aluminum Window - 3+1 Panel",
+    "subtitle": "3+1 panel bifold window system",
+    "description": "75 series aluminum bifold window system with a 3+1 panel layout, black frame, large glass panels, and indoor-outdoor serving capability.",
+    "base_rate": 148.0,
+    "minimum_price": 1700.0,
+    "directions": [
+      "Stack left",
+      "Stack right",
+      "Split stack"
+    ],
+    "glass_colors": [
+      "Clear",
+      "Low-E",
+      "Grey",
+      "Bronze"
+    ],
+    "frame_colors": [
+      "Black",
+      "White",
+      "Charcoal",
+      "Bronze"
+    ],
+    "accent": "#4f5b58",
+    "hero_image": "uploads/bw-750-4p-75-series-aluminum-window.webp",
+    "detail_images": [
+      "uploads/bw-750-4p-75-series-aluminum-window.webp"
+    ],
+    "active": true,
+    "updated_at": "2026-07-02T16:19",
+    "color_options": [
+      "Black",
+      "White",
+      "Charcoal",
+      "Bronze"
+    ],
+    "color_information": "",
+    "stock_information": ""
+  },
+  {
     "id": "BW-220",
     "section": "Windows",
     "category": "Bifold Window",
@@ -2261,140 +2420,18 @@
     "stock_information": ""
   },
   {
-    "id": "SH-620",
+    "id": "BH-440",
     "section": "Windows",
-    "category": "Single Hung Window",
-    "name": "Single Hung Window With Screen",
-    "subtitle": "Thermally insulated single hung window",
-    "description": "Thermally insulated single hung window with integrated screen, black frame, and vertical sash movement.",
-    "base_rate": 96.0,
-    "minimum_price": 620.0,
-    "directions": [
-      "Bottom sash opening",
-      "Fixed top sash"
-    ],
-    "glass_colors": [
-      "Clear",
-      "Low-E",
-      "Grey",
-      "Bronze",
-      "Frosted"
-    ],
-    "frame_colors": [
-      "Black",
-      "White",
-      "Charcoal",
-      "Bronze"
-    ],
-    "accent": "#5f6865",
-    "hero_image": "uploads/sh-620-single-hung-window-screen.webp",
-    "detail_images": [
-      "uploads/sh-620-single-hung-window-screen.webp"
-    ],
-    "active": true,
-    "updated_at": "2026-07-03T20:34",
-    "color_options": [
-      "Black",
-      "White",
-      "Charcoal",
-      "Bronze"
-    ],
-    "color_information": "",
-    "stock_information": ""
-  },
-  {
-    "id": "CW-620",
-    "section": "Windows",
-    "category": "Casement Window",
-    "name": "Vinyl Double Casement Window",
-    "subtitle": "Vinyl double casement layout",
-    "description": "Vinyl double casement window with upper transom, white frame, and paired operable casement sashes.",
-    "base_rate": 96.0,
-    "minimum_price": 620.0,
-    "directions": [
-      "Hinge left",
-      "Hinge right",
-      "Double casement"
-    ],
-    "glass_colors": [
-      "Clear",
-      "Low-E",
-      "Grey",
-      "Bronze",
-      "Frosted"
-    ],
-    "frame_colors": [
-      "White",
-      "Black",
-      "Grey"
-    ],
-    "accent": "#5f6865",
-    "hero_image": "uploads/cw-620-vinyl-double-casement-window.webp",
-    "detail_images": [
-      "uploads/cw-620-vinyl-double-casement-window.webp"
-    ],
-    "active": true,
-    "updated_at": "2026-07-03T20:34",
-    "color_options": [
-      "White",
-      "Black",
-      "Grey"
-    ],
-    "color_information": "",
-    "stock_information": ""
-  },
-  {
-    "id": "CW-630",
-    "section": "Windows",
-    "category": "Casement Window",
-    "name": "Vinyl Classic Casement Window",
-    "subtitle": "Classic multi-lite vinyl configuration",
-    "description": "Vinyl classic casement window with fixed center picture panel, side casements, and multiple transom/lower lite sections.",
-    "base_rate": 96.0,
-    "minimum_price": 620.0,
-    "directions": [
-      "Hinge left",
-      "Hinge right",
-      "Fixed center"
-    ],
-    "glass_colors": [
-      "Clear",
-      "Low-E",
-      "Grey",
-      "Bronze",
-      "Frosted"
-    ],
-    "frame_colors": [
-      "White",
-      "Black",
-      "Grey"
-    ],
-    "accent": "#5f6865",
-    "hero_image": "uploads/cw-630-vinyl-classic-casement-window.webp",
-    "detail_images": [
-      "uploads/cw-630-vinyl-classic-casement-window.webp"
-    ],
-    "active": true,
-    "updated_at": "2026-07-03T20:34",
-    "color_options": [
-      "White",
-      "Black",
-      "Grey"
-    ],
-    "color_information": "",
-    "stock_information": ""
-  },
-  {
-    "id": "AW-620",
-    "section": "Windows",
-    "category": "Awning Window",
-    "name": "Awning Window",
-    "subtitle": "Outward top-hinged ventilation",
-    "description": "Awning window with black frame and outward opening sash for controlled ventilation.",
+    "category": "Bottom Hung Window",
+    "name": "Awning Bottom Hung",
+    "subtitle": "Controlled airflow",
+    "description": "A compact window hinged along the bottom for secure, measured ventilation.",
     "base_rate": 104.0,
     "minimum_price": 680.0,
     "directions": [
-      "Top hinged outward"
+      "Handle left",
+      "Handle right",
+      "Top handle"
     ],
     "glass_colors": [
       "Clear",
@@ -2409,13 +2446,13 @@
       "Charcoal",
       "Bronze"
     ],
-    "accent": "#5f6865",
-    "hero_image": "uploads/aw-620-awning-window.webp",
+    "accent": "#727f86",
+    "hero_image": "uploads/bh-440-normalized-0.webp",
     "detail_images": [
-      "uploads/aw-620-awning-window.webp"
+      "uploads/bh-440-normalized-1.webp"
     ],
-    "active": true,
-    "updated_at": "2026-07-03T20:34",
+    "active": false,
+    "updated_at": "",
     "color_options": [
       "Black",
       "White",
@@ -2459,6 +2496,48 @@
     ],
     "active": true,
     "updated_at": "2026-07-03T20:34",
+    "color_options": [
+      "Black",
+      "White",
+      "Charcoal",
+      "Bronze"
+    ],
+    "color_information": "",
+    "stock_information": ""
+  },
+  {
+    "id": "CW-110",
+    "section": "Windows",
+    "category": "Casement Window",
+    "name": "Breeze Casement Window",
+    "subtitle": "Maximum ventilation",
+    "description": "A versatile outward-opening window with secure multi-point hardware and clean sightlines.",
+    "base_rate": 96.0,
+    "minimum_price": 620.0,
+    "directions": [
+      "Hinge left",
+      "Hinge right"
+    ],
+    "glass_colors": [
+      "Clear",
+      "Low-E",
+      "Grey",
+      "Bronze",
+      "Frosted"
+    ],
+    "frame_colors": [
+      "Black",
+      "White",
+      "Charcoal",
+      "Bronze"
+    ],
+    "accent": "#6f7f79",
+    "hero_image": "uploads/cw-110-normalized-0.webp",
+    "detail_images": [
+      "uploads/cw-110-normalized-1.webp"
+    ],
+    "active": false,
+    "updated_at": "",
     "color_options": [
       "Black",
       "White",
@@ -2598,187 +2677,18 @@
     "stock_information": ""
   },
   {
-    "id": "TT-620",
-    "section": "Windows",
-    "category": "Tilt and Turn Window",
-    "name": "Thermally Efficient Tilt And Turn Window",
-    "subtitle": "Thermally efficient tilt and turn layout",
-    "description": "Thermally efficient tilt and turn window with large fixed panel, operable side sash, dark aluminum frame, and dual ventilation operation.",
-    "base_rate": 104.0,
-    "minimum_price": 680.0,
-    "directions": [
-      "Tilt in",
-      "Turn in",
-      "Fixed + operable sash"
-    ],
-    "glass_colors": [
-      "Clear",
-      "Low-E",
-      "Grey",
-      "Bronze",
-      "Frosted"
-    ],
-    "frame_colors": [
-      "Black",
-      "White",
-      "Charcoal",
-      "Bronze"
-    ],
-    "accent": "#5f6865",
-    "hero_image": "uploads/tt-620-thermally-efficient-tilt-and-turn-window.webp",
-    "detail_images": [
-      "uploads/tt-620-thermally-efficient-tilt-and-turn-window.webp"
-    ],
-    "active": false,
-    "updated_at": "2026-07-03T21:21",
-    "color_options": [
-      "Black",
-      "White",
-      "Charcoal",
-      "Bronze"
-    ],
-    "color_information": "",
-    "stock_information": ""
-  },
-  {
-    "id": "TT-630",
-    "section": "Windows",
-    "category": "Tilt and Turn Window",
-    "name": "Classic Aluminum Tilt And Turn Window",
-    "subtitle": "Classic aluminum tilt and turn window",
-    "description": "Classic aluminum tilt and turn window with single operable sash, dark frame, and inward tilt/turn ventilation.",
-    "base_rate": 104.0,
-    "minimum_price": 680.0,
-    "directions": [
-      "Tilt in",
-      "Turn in"
-    ],
-    "glass_colors": [
-      "Clear",
-      "Low-E",
-      "Grey",
-      "Bronze",
-      "Frosted"
-    ],
-    "frame_colors": [
-      "Black",
-      "White",
-      "Charcoal",
-      "Bronze"
-    ],
-    "accent": "#5f6865",
-    "hero_image": "uploads/tt-630-classic-aluminum-tilt-and-turn-window.webp",
-    "detail_images": [
-      "uploads/tt-630-classic-aluminum-tilt-and-turn-window.webp"
-    ],
-    "active": false,
-    "updated_at": "2026-07-03T21:21",
-    "color_options": [
-      "Black",
-      "White",
-      "Charcoal",
-      "Bronze"
-    ],
-    "color_information": "",
-    "stock_information": ""
-  },
-  {
-    "id": "TT-640",
-    "section": "Windows",
-    "category": "Tilt and Turn Window",
-    "name": "Soundproof Tilt And Turn Window",
-    "subtitle": "Soundproof tilt and turn window",
-    "description": "Soundproof tilt and turn window with stacked upper and lower lites, dark frame, and inward opening sash for quiet ventilation.",
-    "base_rate": 104.0,
-    "minimum_price": 680.0,
-    "directions": [
-      "Tilt in",
-      "Turn in"
-    ],
-    "glass_colors": [
-      "Clear",
-      "Low-E",
-      "Grey",
-      "Bronze",
-      "Frosted"
-    ],
-    "frame_colors": [
-      "Black",
-      "White",
-      "Charcoal",
-      "Bronze"
-    ],
-    "accent": "#5f6865",
-    "hero_image": "uploads/tt-640-soundproof-tilt-and-turn-window.webp",
-    "detail_images": [
-      "uploads/tt-640-soundproof-tilt-and-turn-window.webp"
-    ],
-    "active": false,
-    "updated_at": "2026-07-03T21:21",
-    "color_options": [
-      "Black",
-      "White",
-      "Charcoal",
-      "Bronze"
-    ],
-    "color_information": "",
-    "stock_information": ""
-  },
-  {
-    "id": "BH-440",
-    "section": "Windows",
-    "category": "Bottom Hung Window",
-    "name": "Awning Bottom Hung",
-    "subtitle": "Controlled airflow",
-    "description": "A compact window hinged along the bottom for secure, measured ventilation.",
-    "base_rate": 104.0,
-    "minimum_price": 680.0,
-    "directions": [
-      "Handle left",
-      "Handle right",
-      "Top handle"
-    ],
-    "glass_colors": [
-      "Clear",
-      "Low-E",
-      "Grey",
-      "Bronze",
-      "Frosted"
-    ],
-    "frame_colors": [
-      "Black",
-      "White",
-      "Charcoal",
-      "Bronze"
-    ],
-    "accent": "#727f86",
-    "hero_image": "uploads/bh-440-normalized-0.webp",
-    "detail_images": [
-      "uploads/bh-440-normalized-1.webp"
-    ],
-    "active": false,
-    "updated_at": "",
-    "color_options": [
-      "Black",
-      "White",
-      "Charcoal",
-      "Bronze"
-    ],
-    "color_information": "",
-    "stock_information": ""
-  },
-  {
-    "id": "CW-110",
+    "id": "CW-630",
     "section": "Windows",
     "category": "Casement Window",
-    "name": "Breeze Casement Window",
-    "subtitle": "Maximum ventilation",
-    "description": "A versatile outward-opening window with secure multi-point hardware and clean sightlines.",
+    "name": "Vinyl Classic Casement Window",
+    "subtitle": "Classic multi-lite vinyl configuration",
+    "description": "Vinyl classic casement window with fixed center picture panel, side casements, and multiple transom/lower lite sections.",
     "base_rate": 96.0,
     "minimum_price": 620.0,
     "directions": [
       "Hinge left",
-      "Hinge right"
+      "Hinge right",
+      "Fixed center"
     ],
     "glass_colors": [
       "Clear",
@@ -2788,23 +2698,62 @@
       "Frosted"
     ],
     "frame_colors": [
-      "Black",
       "White",
-      "Charcoal",
-      "Bronze"
+      "Black",
+      "Grey"
     ],
-    "accent": "#6f7f79",
-    "hero_image": "uploads/cw-110-normalized-0.webp",
+    "accent": "#5f6865",
+    "hero_image": "uploads/cw-630-vinyl-classic-casement-window.webp",
     "detail_images": [
-      "uploads/cw-110-normalized-1.webp"
+      "uploads/cw-630-vinyl-classic-casement-window.webp"
     ],
-    "active": false,
-    "updated_at": "",
+    "active": true,
+    "updated_at": "2026-07-03T20:34",
     "color_options": [
-      "Black",
       "White",
-      "Charcoal",
-      "Bronze"
+      "Black",
+      "Grey"
+    ],
+    "color_information": "",
+    "stock_information": ""
+  },
+  {
+    "id": "CW-620",
+    "section": "Windows",
+    "category": "Casement Window",
+    "name": "Vinyl Double Casement Window",
+    "subtitle": "Vinyl double casement layout",
+    "description": "Vinyl double casement window with upper transom, white frame, and paired operable casement sashes.",
+    "base_rate": 96.0,
+    "minimum_price": 620.0,
+    "directions": [
+      "Hinge left",
+      "Hinge right",
+      "Double casement"
+    ],
+    "glass_colors": [
+      "Clear",
+      "Low-E",
+      "Grey",
+      "Bronze",
+      "Frosted"
+    ],
+    "frame_colors": [
+      "White",
+      "Black",
+      "Grey"
+    ],
+    "accent": "#5f6865",
+    "hero_image": "uploads/cw-620-vinyl-double-casement-window.webp",
+    "detail_images": [
+      "uploads/cw-620-vinyl-double-casement-window.webp"
+    ],
+    "active": true,
+    "updated_at": "2026-07-03T20:34",
+    "color_options": [
+      "White",
+      "Black",
+      "Grey"
     ],
     "color_information": "",
     "stock_information": ""
@@ -2851,12 +2800,95 @@
     "stock_information": ""
   },
   {
-    "id": "SW-620",
+    "id": "SH-620",
+    "section": "Windows",
+    "category": "Single Hung Window",
+    "name": "Single Hung Window With Screen",
+    "subtitle": "Thermally insulated single hung window",
+    "description": "Thermally insulated single hung window with integrated screen, black frame, and vertical sash movement.",
+    "base_rate": 96.0,
+    "minimum_price": 620.0,
+    "directions": [
+      "Bottom sash opening",
+      "Fixed top sash"
+    ],
+    "glass_colors": [
+      "Clear",
+      "Low-E",
+      "Grey",
+      "Bronze",
+      "Frosted"
+    ],
+    "frame_colors": [
+      "Black",
+      "White",
+      "Charcoal",
+      "Bronze"
+    ],
+    "accent": "#5f6865",
+    "hero_image": "uploads/sh-620-single-hung-window-screen.webp",
+    "detail_images": [
+      "uploads/sh-620-single-hung-window-screen.webp"
+    ],
+    "active": true,
+    "updated_at": "2026-07-03T20:34",
+    "color_options": [
+      "Black",
+      "White",
+      "Charcoal",
+      "Bronze"
+    ],
+    "color_information": "",
+    "stock_information": ""
+  },
+  {
+    "id": "SW-650",
     "section": "Windows",
     "category": "Sliding Window",
-    "name": "Urban Aluminum Sliding Window",
-    "subtitle": "Urban aluminum sliding window",
-    "description": "Urban aluminum sliding window with upper transom, dark frame, and two-panel horizontal sliding operation.",
+    "name": "Extra-Narrow Frame UPVC Sliding Window",
+    "subtitle": "Extra-narrow UPVC sliding window",
+    "description": "Extra-narrow frame UPVC sliding window with white frame and two-panel horizontal sliding operation.",
+    "base_rate": 88.0,
+    "minimum_price": 560.0,
+    "directions": [
+      "Left opening",
+      "Right opening",
+      "Both sides"
+    ],
+    "glass_colors": [
+      "Clear",
+      "Low-E",
+      "Grey",
+      "Bronze",
+      "Frosted"
+    ],
+    "frame_colors": [
+      "White",
+      "Black",
+      "Grey"
+    ],
+    "accent": "#5f6865",
+    "hero_image": "uploads/sw-650-extra-narrow-frame-upvc-sliding-window.webp",
+    "detail_images": [
+      "uploads/sw-650-extra-narrow-frame-upvc-sliding-window.webp"
+    ],
+    "active": true,
+    "updated_at": "2026-07-03T20:51",
+    "color_options": [
+      "White",
+      "Black",
+      "Grey"
+    ],
+    "color_information": "",
+    "stock_information": ""
+  },
+  {
+    "id": "SW-550",
+    "section": "Windows",
+    "category": "Sliding Window",
+    "name": "Glide Sliding Window",
+    "subtitle": "Simple horizontal movement",
+    "description": "A practical sliding window with removable sash and low-friction rollers.",
     "base_rate": 88.0,
     "minimum_price": 560.0,
     "directions": [
@@ -2877,13 +2909,13 @@
       "Charcoal",
       "Bronze"
     ],
-    "accent": "#5f6865",
-    "hero_image": "uploads/sw-620-urban-aluminum-sliding-window.webp",
+    "accent": "#5f746e",
+    "hero_image": "uploads/sw-550-normalized-0.webp",
     "detail_images": [
-      "uploads/sw-620-urban-aluminum-sliding-window.webp"
+      "uploads/sw-550-normalized-1.webp"
     ],
-    "active": true,
-    "updated_at": "2026-07-03T20:51",
+    "active": false,
+    "updated_at": "",
     "color_options": [
       "Black",
       "White",
@@ -2980,53 +3012,12 @@
     "stock_information": ""
   },
   {
-    "id": "SW-650",
+    "id": "SW-620",
     "section": "Windows",
     "category": "Sliding Window",
-    "name": "Extra-Narrow Frame UPVC Sliding Window",
-    "subtitle": "Extra-narrow UPVC sliding window",
-    "description": "Extra-narrow frame UPVC sliding window with white frame and two-panel horizontal sliding operation.",
-    "base_rate": 88.0,
-    "minimum_price": 560.0,
-    "directions": [
-      "Left opening",
-      "Right opening",
-      "Both sides"
-    ],
-    "glass_colors": [
-      "Clear",
-      "Low-E",
-      "Grey",
-      "Bronze",
-      "Frosted"
-    ],
-    "frame_colors": [
-      "White",
-      "Black",
-      "Grey"
-    ],
-    "accent": "#5f6865",
-    "hero_image": "uploads/sw-650-extra-narrow-frame-upvc-sliding-window.webp",
-    "detail_images": [
-      "uploads/sw-650-extra-narrow-frame-upvc-sliding-window.webp"
-    ],
-    "active": true,
-    "updated_at": "2026-07-03T20:51",
-    "color_options": [
-      "White",
-      "Black",
-      "Grey"
-    ],
-    "color_information": "",
-    "stock_information": ""
-  },
-  {
-    "id": "SW-550",
-    "section": "Windows",
-    "category": "Sliding Window",
-    "name": "Glide Sliding Window",
-    "subtitle": "Simple horizontal movement",
-    "description": "A practical sliding window with removable sash and low-friction rollers.",
+    "name": "Urban Aluminum Sliding Window",
+    "subtitle": "Urban aluminum sliding window",
+    "description": "Urban aluminum sliding window with upper transom, dark frame, and two-panel horizontal sliding operation.",
     "base_rate": 88.0,
     "minimum_price": 560.0,
     "directions": [
@@ -3047,13 +3038,140 @@
       "Charcoal",
       "Bronze"
     ],
-    "accent": "#5f746e",
-    "hero_image": "uploads/sw-550-normalized-0.webp",
+    "accent": "#5f6865",
+    "hero_image": "uploads/sw-620-urban-aluminum-sliding-window.webp",
     "detail_images": [
-      "uploads/sw-550-normalized-1.webp"
+      "uploads/sw-620-urban-aluminum-sliding-window.webp"
+    ],
+    "active": true,
+    "updated_at": "2026-07-03T20:51",
+    "color_options": [
+      "Black",
+      "White",
+      "Charcoal",
+      "Bronze"
+    ],
+    "color_information": "",
+    "stock_information": ""
+  },
+  {
+    "id": "TT-630",
+    "section": "Windows",
+    "category": "Tilt and Turn Window",
+    "name": "Classic Aluminum Tilt And Turn Window",
+    "subtitle": "Classic aluminum tilt and turn window",
+    "description": "Classic aluminum tilt and turn window with single operable sash, dark frame, and inward tilt/turn ventilation.",
+    "base_rate": 104.0,
+    "minimum_price": 680.0,
+    "directions": [
+      "Tilt in",
+      "Turn in"
+    ],
+    "glass_colors": [
+      "Clear",
+      "Low-E",
+      "Grey",
+      "Bronze",
+      "Frosted"
+    ],
+    "frame_colors": [
+      "Black",
+      "White",
+      "Charcoal",
+      "Bronze"
+    ],
+    "accent": "#5f6865",
+    "hero_image": "uploads/tt-630-classic-aluminum-tilt-and-turn-window.webp",
+    "detail_images": [
+      "uploads/tt-630-classic-aluminum-tilt-and-turn-window.webp"
     ],
     "active": false,
-    "updated_at": "",
+    "updated_at": "2026-07-03T21:21",
+    "color_options": [
+      "Black",
+      "White",
+      "Charcoal",
+      "Bronze"
+    ],
+    "color_information": "",
+    "stock_information": ""
+  },
+  {
+    "id": "TT-640",
+    "section": "Windows",
+    "category": "Tilt and Turn Window",
+    "name": "Soundproof Tilt And Turn Window",
+    "subtitle": "Soundproof tilt and turn window",
+    "description": "Soundproof tilt and turn window with stacked upper and lower lites, dark frame, and inward opening sash for quiet ventilation.",
+    "base_rate": 104.0,
+    "minimum_price": 680.0,
+    "directions": [
+      "Tilt in",
+      "Turn in"
+    ],
+    "glass_colors": [
+      "Clear",
+      "Low-E",
+      "Grey",
+      "Bronze",
+      "Frosted"
+    ],
+    "frame_colors": [
+      "Black",
+      "White",
+      "Charcoal",
+      "Bronze"
+    ],
+    "accent": "#5f6865",
+    "hero_image": "uploads/tt-640-soundproof-tilt-and-turn-window.webp",
+    "detail_images": [
+      "uploads/tt-640-soundproof-tilt-and-turn-window.webp"
+    ],
+    "active": false,
+    "updated_at": "2026-07-03T21:21",
+    "color_options": [
+      "Black",
+      "White",
+      "Charcoal",
+      "Bronze"
+    ],
+    "color_information": "",
+    "stock_information": ""
+  },
+  {
+    "id": "TT-620",
+    "section": "Windows",
+    "category": "Tilt and Turn Window",
+    "name": "Thermally Efficient Tilt And Turn Window",
+    "subtitle": "Thermally efficient tilt and turn layout",
+    "description": "Thermally efficient tilt and turn window with large fixed panel, operable side sash, dark aluminum frame, and dual ventilation operation.",
+    "base_rate": 104.0,
+    "minimum_price": 680.0,
+    "directions": [
+      "Tilt in",
+      "Turn in",
+      "Fixed + operable sash"
+    ],
+    "glass_colors": [
+      "Clear",
+      "Low-E",
+      "Grey",
+      "Bronze",
+      "Frosted"
+    ],
+    "frame_colors": [
+      "Black",
+      "White",
+      "Charcoal",
+      "Bronze"
+    ],
+    "accent": "#5f6865",
+    "hero_image": "uploads/tt-620-thermally-efficient-tilt-and-turn-window.webp",
+    "detail_images": [
+      "uploads/tt-620-thermally-efficient-tilt-and-turn-window.webp"
+    ],
+    "active": false,
+    "updated_at": "2026-07-03T21:21",
     "color_options": [
       "Black",
       "White",
@@ -3096,82 +3214,6 @@
     ],
     "active": false,
     "updated_at": "",
-    "color_options": [
-      "Black",
-      "White",
-      "Charcoal",
-      "Bronze"
-    ],
-    "color_information": "",
-    "stock_information": ""
-  },
-  {
-    "id": "AC-100",
-    "section": "Accessories",
-    "category": "Accessories",
-    "name": "Roller Screen",
-    "subtitle": "Exterior screen accessory",
-    "description": "Exterior roller screen accessory for door and window openings, designed to support ventilation while helping keep insects out.",
-    "base_rate": 15.0,
-    "minimum_price": 0.0,
-    "directions": [
-      "Exterior mount",
-      "Interior mount"
-    ],
-    "glass_colors": [
-      "Screen mesh"
-    ],
-    "frame_colors": [
-      "Black",
-      "White",
-      "Charcoal",
-      "Bronze"
-    ],
-    "accent": "#4f5b58",
-    "hero_image": "uploads/ac-100-roller-screen.webp",
-    "detail_images": [
-      "uploads/ac-100-roller-screen.webp"
-    ],
-    "active": true,
-    "updated_at": "2026-07-03T17:28",
-    "color_options": [
-      "Stack right",
-      "Stack left",
-      "Center open"
-    ],
-    "color_information": "",
-    "stock_information": ""
-  },
-  {
-    "id": "AC-200",
-    "section": "Accessories",
-    "category": "Accessories",
-    "name": "Door Blind",
-    "subtitle": "Adjustable privacy blind",
-    "description": "Door blind accessory with horizontal slats for privacy, light control, and a clean integrated door appearance.",
-    "base_rate": 15.0,
-    "minimum_price": 0.0,
-    "directions": [
-      "Left opening",
-      "Right opening",
-      "Center open"
-    ],
-    "glass_colors": [
-      "Blind slats"
-    ],
-    "frame_colors": [
-      "Black",
-      "White",
-      "Charcoal",
-      "Bronze"
-    ],
-    "accent": "#4f4b45",
-    "hero_image": "uploads/ac-200-door-blind.webp",
-    "detail_images": [
-      "uploads/ac-200-door-blind.webp"
-    ],
-    "active": true,
-    "updated_at": "2026-07-06T13:47",
     "color_options": [
       "Black",
       "White",
