@@ -3589,35 +3589,38 @@ def update_customer_payment_schedule(
     second_payment_paid: bool,
 ) -> None:
     now = datetime.now().isoformat(timespec="seconds")
-    with db_connect() as conn:
-        conn.execute(
-            """
-            UPDATE customers
-            SET first_payment_date = ?,
-                first_payment_amount = ?,
-                first_payment_paid = ?,
-                second_payment_enabled = ?,
-                second_payment_date = ?,
-                second_payment_amount = ?,
-                second_payment_paid = ?,
-                updated_at = ?
-            WHERE id = ?
-            """,
-            (
-                first_payment_date.isoformat(),
-                max(float(first_payment_amount), 0.0),
-                int(first_payment_paid),
-                int(second_payment_enabled),
-                second_payment_date.isoformat(),
-                max(float(second_payment_amount), 0.0),
-                int(second_payment_paid),
-                now,
-                customer_id,
-            ),
-        )
+    first_amount = max(float(first_payment_amount), 0.0)
+    use_second_payment = bool(second_payment_enabled)
+    second_amount = max(float(second_payment_amount), 0.0) if use_second_payment else 0.0
+    second_paid_value = bool(second_payment_paid) if use_second_payment else False
+    second_date_value = second_payment_date.isoformat() if use_second_payment else ""
+    updates: dict[str, Any] = {
+        "first_payment_date": first_payment_date.isoformat(),
+        "first_payment_amount": first_amount,
+        "first_payment_paid": int(first_payment_paid),
+        "second_payment_enabled": int(use_second_payment),
+        "second_payment_date": second_date_value,
+        "second_payment_amount": second_amount,
+        "second_payment_paid": int(second_paid_value),
+        "updated_at": now,
+    }
+    if supabase_customers_enabled():
+        try:
+            supabase_update_customer(customer_id, updates)
+            mirror_customer_to_sqlite(customer_id, {**updates, "id": customer_id})
+        except Exception as exc:
+            st.error(f"Payment schedule could not be saved to Supabase: {exc}")
+            st.stop()
+    else:
+        with db_connect() as conn:
+            assignments = ", ".join(f"{key} = ?" for key in updates)
+            conn.execute(
+                f"UPDATE customers SET {assignments} WHERE id = ?",
+                [*updates.values(), customer_id],
+            )
     second_note = (
-        f"Second payment: {display_date(second_payment_date.isoformat())} · {money(float(second_payment_amount))} · {'paid' if second_payment_paid else 'unpaid'}."
-        if second_payment_enabled
+        f"Second payment: {display_date(second_date_value)} · {money(second_amount)} · {'paid' if second_paid_value else 'unpaid'}."
+        if use_second_payment
         else "Second payment: not required."
     )
     add_customer_timeline_event(
@@ -3625,7 +3628,7 @@ def update_customer_payment_schedule(
         date.today(),
         "Payment schedule updated",
         (
-            f"First payment: {display_date(first_payment_date.isoformat())} · {money(float(first_payment_amount))} · {'paid' if first_payment_paid else 'unpaid'}. "
+            f"First payment: {display_date(first_payment_date.isoformat())} · {money(first_amount)} · {'paid' if first_payment_paid else 'unpaid'}. "
             f"{second_note}"
         ),
     )
