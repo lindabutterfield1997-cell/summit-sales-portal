@@ -16,6 +16,7 @@ from datetime import date, datetime, timedelta
 from email.message import EmailMessage
 from pathlib import Path
 from typing import Any, Sequence
+from urllib import error as url_error, parse, request as url_request
 
 import streamlit as st
 import streamlit.components.v1 as components
@@ -209,6 +210,8 @@ def init_state() -> None:
         "quote_discount_type": "No discount",
         "quote_discount_value": 0.0,
         "quote_installation_fee": 0.0,
+        "quote_shipping_fee": 0.0,
+        "quote_shipping_enabled": False,
         "quote_sales_tax_enabled": False,
         "checkout_quote_adjustments": None,
     }
@@ -1334,11 +1337,355 @@ def display_date(value: str | None) -> str:
         return value
 
 
-def row_value(row: sqlite3.Row | None, key: str, default: Any = "") -> Any:
-    if row is None or key not in row.keys():
+def row_value(row: sqlite3.Row | dict[str, Any] | None, key: str, default: Any = "") -> Any:
+    if row is None:
+        return default
+    keys = row.keys() if hasattr(row, "keys") else []
+    if key not in keys:
         return default
     value = row[key]
     return default if value is None else value
+
+
+CUSTOMER_DEFAULTS: dict[str, Any] = {
+    "id": None,
+    "created_at": "",
+    "updated_at": "",
+    "status": "Following",
+    "name": "",
+    "company": "",
+    "email": "",
+    "phone": "",
+    "address": "",
+    "city": "",
+    "zip_code": "",
+    "products_interest": "",
+    "client_type": "",
+    "client_type_note": "",
+    "project_type": "",
+    "project_type_note": "",
+    "use_case": "",
+    "use_case_note": "",
+    "area_zip": "",
+    "area_zip_note": "",
+    "showroom_status": "",
+    "showroom_note": "",
+    "answer_status": "",
+    "answer_status_note": "",
+    "source": "",
+    "initial_contact_date": "",
+    "priority": "Medium",
+    "budget": 0.0,
+    "assigned_to": "",
+    "notes": "",
+    "first_followup_date": "",
+    "next_followup_date": "",
+    "followup_stage": "New lead",
+    "on_hold": 0,
+    "order_date": "",
+    "first_payment_date": "",
+    "first_payment_amount": 0.0,
+    "first_payment_paid": 0,
+    "second_payment_enabled": 1,
+    "second_payment_date": "",
+    "second_payment_amount": 0.0,
+    "second_payment_paid": 0,
+    "install_followup_date": "",
+    "install_status": "",
+    "lost_date": "",
+    "lost_reason": "",
+    "lost_notes": "",
+    "wishlist": "[]",
+}
+
+# Customer columns supported by the Supabase customers table.
+# Keep this aligned with the ALTER TABLE SQL used in Supabase.
+SUPABASE_CUSTOMER_COLUMNS = {
+    "id",
+    "created_at",
+    "updated_at",
+    "status",
+    "name",
+    "company",
+    "email",
+    "phone",
+    "address",
+    "city",
+    "zip_code",
+    "products_interest",
+    "client_type",
+    "client_type_note",
+    "project_type",
+    "project_type_note",
+    "use_case",
+    "use_case_note",
+    "area_zip",
+    "area_zip_note",
+    "showroom_status",
+    "showroom_note",
+    "answer_status",
+    "answer_status_note",
+    "source",
+    "initial_contact_date",
+    "priority",
+    "budget",
+    "assigned_to",
+    "notes",
+    "first_followup_date",
+    "next_followup_date",
+    "followup_stage",
+    "on_hold",
+    "order_date",
+    "first_payment_date",
+    "first_payment_amount",
+    "first_payment_paid",
+    "second_payment_enabled",
+    "second_payment_date",
+    "second_payment_amount",
+    "second_payment_paid",
+    "install_followup_date",
+    "install_status",
+    "lost_date",
+    "lost_reason",
+    "lost_notes",
+    "wishlist",
+}
+SUPABASE_DATE_COLUMNS = {
+    "initial_contact_date",
+    "first_followup_date",
+    "next_followup_date",
+    "order_date",
+    "first_payment_date",
+    "second_payment_date",
+    "install_followup_date",
+    "lost_date",
+}
+
+
+def secret_or_env(name: str, default: str = "") -> str:
+    try:
+        value = st.secrets.get(name, "")
+    except Exception:
+        value = ""
+    return str(value or os.environ.get(name, default) or "").strip()
+
+
+def supabase_customers_enabled() -> bool:
+    return bool(secret_or_env("SUPABASE_URL") and (secret_or_env("SUPABASE_SERVICE_KEY") or secret_or_env("SUPABASE_KEY")))
+
+
+def supabase_api_key() -> str:
+    return secret_or_env("SUPABASE_SERVICE_KEY") or secret_or_env("SUPABASE_KEY")
+
+
+def supabase_request(method: str, table: str, query: str = "", payload: Any | None = None, prefer: str = "return=representation") -> Any:
+    base_url = secret_or_env("SUPABASE_URL").rstrip("/")
+    api_key = supabase_api_key()
+    if not base_url or not api_key:
+        raise RuntimeError("Supabase is not configured.")
+    url = f"{base_url}/rest/v1/{table}"
+    if query:
+        url += f"?{query}"
+    headers = {
+        "apikey": api_key,
+        "Authorization": f"Bearer {api_key}",
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+    }
+    if prefer:
+        headers["Prefer"] = prefer
+    data = json.dumps(payload).encode("utf-8") if payload is not None else None
+    req = url_request.Request(url, data=data, headers=headers, method=method.upper())
+    try:
+        with url_request.urlopen(req, timeout=15) as response:
+            body = response.read().decode("utf-8")
+    except url_error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"Supabase request failed: {exc.code} {detail}") from exc
+    if not body:
+        return []
+    return json.loads(body)
+
+
+def warn_supabase_fallback(message: str) -> None:
+    if st.session_state.get("supabase_customer_warning_shown"):
+        return
+    st.session_state.supabase_customer_warning_shown = True
+    st.warning(message)
+
+
+def normalize_customer_row(data: dict[str, Any]) -> dict[str, Any]:
+    row = dict(CUSTOMER_DEFAULTS)
+    row.update(data or {})
+    if row.get("zip_code") and not row.get("area_zip"):
+        row["area_zip"] = row["zip_code"]
+    if row.get("wishlist") is None:
+        row["wishlist"] = "[]"
+    elif isinstance(row.get("wishlist"), (list, dict)):
+        row["wishlist"] = json.dumps(row["wishlist"], ensure_ascii=False)
+    for key in ("budget", "first_payment_amount", "second_payment_amount"):
+        try:
+            row[key] = float(row.get(key) or 0.0)
+        except (TypeError, ValueError):
+            row[key] = 0.0
+    for key in ("on_hold", "first_payment_paid", "second_payment_enabled", "second_payment_paid"):
+        row[key] = int(bool(row.get(key))) if isinstance(row.get(key), bool) else int(row.get(key) or 0)
+    if not row.get("updated_at"):
+        row["updated_at"] = row.get("created_at") or ""
+    return row
+
+
+SQLITE_CUSTOMER_COLUMNS = (
+    "id",
+    "created_at",
+    "updated_at",
+    "status",
+    "name",
+    "company",
+    "email",
+    "phone",
+    "address",
+    "products_interest",
+    "client_type",
+    "client_type_note",
+    "project_type",
+    "project_type_note",
+    "use_case",
+    "use_case_note",
+    "area_zip",
+    "area_zip_note",
+    "showroom_status",
+    "showroom_note",
+    "answer_status",
+    "answer_status_note",
+    "source",
+    "initial_contact_date",
+    "priority",
+    "budget",
+    "assigned_to",
+    "notes",
+    "first_followup_date",
+    "next_followup_date",
+    "followup_stage",
+    "on_hold",
+    "order_date",
+    "first_payment_date",
+    "first_payment_amount",
+    "first_payment_paid",
+    "second_payment_enabled",
+    "second_payment_date",
+    "second_payment_amount",
+    "second_payment_paid",
+    "install_followup_date",
+    "install_status",
+    "lost_date",
+    "lost_reason",
+    "lost_notes",
+    "wishlist",
+)
+
+
+def mirror_customer_to_sqlite(customer_id: int | None, data: dict[str, Any] | None = None) -> None:
+    if not customer_id:
+        return
+    row = normalize_customer_row({**(data or {}), "id": int(customer_id)})
+    now = datetime.now().isoformat(timespec="seconds")
+    if not row.get("created_at"):
+        row["created_at"] = now
+    if not row.get("updated_at"):
+        row["updated_at"] = now
+    if not row.get("name"):
+        row["name"] = "Supabase Customer"
+    values = [row_value(row, column, CUSTOMER_DEFAULTS.get(column, "")) for column in SQLITE_CUSTOMER_COLUMNS]
+    columns = ", ".join(SQLITE_CUSTOMER_COLUMNS)
+    placeholders = ", ".join("?" for _ in SQLITE_CUSTOMER_COLUMNS)
+    updates = ", ".join(f"{column} = excluded.{column}" for column in SQLITE_CUSTOMER_COLUMNS if column != "id")
+    with db_connect() as conn:
+        conn.execute(
+            f"INSERT INTO customers ({columns}) VALUES ({placeholders}) ON CONFLICT(id) DO UPDATE SET {updates}",
+            values,
+        )
+
+
+def supabase_customer_rows_all() -> list[dict[str, Any]]:
+    query = parse.urlencode({"select": "*", "order": "updated_at.desc"})
+    rows = supabase_request("GET", "customers", query=query, prefer="")
+    normalized_rows = [normalize_customer_row(row) for row in rows]
+    for row in normalized_rows:
+        mirror_customer_to_sqlite(int(row["id"]), row)
+    return normalized_rows
+
+
+def filtered_supabase_customer_rows(status: str | None = None, search: str = "", *, company_order: bool = False) -> list[dict[str, Any]]:
+    rows = supabase_customer_rows_all()
+    owner = customer_owner_filter()
+    if owner:
+        rows = [row for row in rows if str(row_value(row, "assigned_to", "")).lower() == owner.lower()]
+    if status:
+        rows = [row for row in rows if row_value(row, "status") == status]
+    if search:
+        query = search.strip().lower()
+        rows = [row for row in rows if query in customer_search_blob(row)]
+    if company_order:
+        rows.sort(key=lambda row: (row_value(row, "order_date") or row_value(row, "updated_at") or "", row_value(row, "name")), reverse=True)
+    else:
+        priority_rank = {"High": 0, "Medium": 1, "Low": 2}
+        rows.sort(
+            key=lambda row: (
+                priority_rank.get(row_value(row, "priority", "Medium"), 3),
+                row_value(row, "next_followup_date") or row_value(row, "install_followup_date") or row_value(row, "order_date") or row_value(row, "updated_at") or "",
+            )
+        )
+    return rows
+
+
+def supabase_customer_payload(data: dict[str, Any], *, include_created_at: bool = False) -> dict[str, Any]:
+    payload: dict[str, Any] = {}
+    for key, value in data.items():
+        target_key = "zip_code" if key == "area_zip" else key
+        if target_key not in SUPABASE_CUSTOMER_COLUMNS or target_key == "id":
+            continue
+        if target_key == "created_at" and not include_created_at:
+            continue
+        if target_key == "wishlist":
+            if isinstance(value, str):
+                try:
+                    value = json.loads(value or "[]")
+                except json.JSONDecodeError:
+                    value = []
+            elif value is None:
+                value = []
+        if target_key in SUPABASE_DATE_COLUMNS and not value:
+            value = None
+        payload[target_key] = value
+    if "city" not in payload:
+        city = city_from_address(str(data.get("address") or "")) or city_from_zip(str(data.get("zip_code") or data.get("area_zip") or data.get("address") or ""))
+        if city:
+            payload["city"] = city
+    return payload
+
+
+def supabase_save_customer(customer_id: int | None, data: dict[str, Any]) -> int:
+    payload = supabase_customer_payload(data, include_created_at=not bool(customer_id))
+    if customer_id:
+        query = f"id=eq.{int(customer_id)}"
+        rows = supabase_request("PATCH", "customers", query=query, payload=payload)
+        return int(rows[0]["id"] if rows else customer_id)
+    rows = supabase_request("POST", "customers", payload=payload)
+    if not rows:
+        raise RuntimeError("Supabase did not return the new customer id.")
+    return int(rows[0]["id"])
+
+
+def supabase_update_customer(customer_id: int, updates: dict[str, Any]) -> None:
+    payload = supabase_customer_payload(updates)
+    if not payload:
+        return
+    supabase_request("PATCH", "customers", query=f"id=eq.{int(customer_id)}", payload=payload, prefer="return=minimal")
+
+
+def supabase_delete_customer(customer_id: int) -> None:
+    supabase_request("DELETE", "customers", query=f"id=eq.{int(customer_id)}", payload=None, prefer="return=minimal")
 
 
 def option_index(options: Sequence[str], value: str | None) -> int:
@@ -1693,7 +2040,16 @@ def delete_inventory_item(item_id: int) -> None:
         conn.execute("DELETE FROM inventory_items WHERE id = ?", (item_id,))
 
 
-def customer_rows(status: str | None = None, search: str = "") -> list[sqlite3.Row]:
+def customer_rows(status: str | None = None, search: str = "") -> list[sqlite3.Row | dict[str, Any]]:
+    if supabase_customers_enabled():
+        try:
+            return filtered_supabase_customer_rows(status, search)
+        except Exception as exc:
+            warn_supabase_fallback(f"Supabase customer sync failed, showing local customers for now. {exc}")
+    return sqlite_customer_rows(status, search)
+
+
+def sqlite_customer_rows(status: str | None = None, search: str = "") -> list[sqlite3.Row]:
     query = "SELECT * FROM customers"
     clauses: list[str] = []
     params: list[Any] = []
@@ -1726,7 +2082,16 @@ def customer_rows(status: str | None = None, search: str = "") -> list[sqlite3.R
         return conn.execute(query, params).fetchall()
 
 
-def company_customer_rows(status: str | None = None, search: str = "") -> list[sqlite3.Row]:
+def company_customer_rows(status: str | None = None, search: str = "") -> list[sqlite3.Row | dict[str, Any]]:
+    if supabase_customers_enabled():
+        try:
+            return filtered_supabase_customer_rows(status, search, company_order=True)
+        except Exception as exc:
+            warn_supabase_fallback(f"Supabase customer sync failed, showing local customers for now. {exc}")
+    return sqlite_company_customer_rows(status, search)
+
+
+def sqlite_company_customer_rows(status: str | None = None, search: str = "") -> list[sqlite3.Row]:
     query = "SELECT * FROM customers"
     clauses: list[str] = []
     params: list[Any] = []
@@ -1753,7 +2118,25 @@ def company_customer_rows(status: str | None = None, search: str = "") -> list[s
         return conn.execute(query, params).fetchall()
 
 
-def customer_by_id(customer_id: int) -> sqlite3.Row | None:
+def customer_by_id(customer_id: int) -> sqlite3.Row | dict[str, Any] | None:
+    if supabase_customers_enabled():
+        try:
+            query = parse.urlencode({"select": "*", "id": f"eq.{int(customer_id)}", "limit": "1"})
+            rows = supabase_request("GET", "customers", query=query, prefer="")
+            if not rows:
+                return None
+            row = normalize_customer_row(rows[0])
+            mirror_customer_to_sqlite(int(row["id"]), row)
+            owner = customer_owner_filter()
+            if owner and str(row_value(row, "assigned_to", "")).lower() != owner.lower():
+                return None
+            return row
+        except Exception as exc:
+            warn_supabase_fallback(f"Supabase customer sync failed, showing local customer data for now. {exc}")
+    return sqlite_customer_by_id(customer_id)
+
+
+def sqlite_customer_by_id(customer_id: int) -> sqlite3.Row | None:
     owner = customer_owner_filter()
     with db_connect() as conn:
         conn.row_factory = sqlite3.Row
@@ -1765,7 +2148,28 @@ def customer_by_id(customer_id: int) -> sqlite3.Row | None:
         return conn.execute("SELECT * FROM customers WHERE id = ?", (customer_id,)).fetchone()
 
 
-def find_customer_by_contact(email: str, phone: str) -> sqlite3.Row | None:
+def find_customer_by_contact(email: str, phone: str) -> sqlite3.Row | dict[str, Any] | None:
+    if supabase_customers_enabled():
+        try:
+            rows = filtered_supabase_customer_rows()
+            target_email = email.strip().lower()
+            phone_values = {phone.strip(), format_us_phone(phone), re.sub(r"\D+", "", phone or "")}
+            phone_values = {value for value in phone_values if value}
+            if target_email:
+                for row in rows:
+                    if str(row_value(row, "email", "")).strip().lower() == target_email:
+                        return row
+            for row in rows:
+                row_phone = str(row_value(row, "phone", ""))
+                if row_phone in phone_values or re.sub(r"\D+", "", row_phone) in phone_values:
+                    return row
+            return None
+        except Exception as exc:
+            warn_supabase_fallback(f"Supabase customer sync failed, searching local customers for now. {exc}")
+    return sqlite_find_customer_by_contact(email, phone)
+
+
+def sqlite_find_customer_by_contact(email: str, phone: str) -> sqlite3.Row | None:
     owner = customer_owner_filter()
     owner_clause = " AND lower(assigned_to) = lower(?)" if owner else ""
     with db_connect() as conn:
@@ -1835,13 +2239,15 @@ def customer_display_name(customer_id: int | None) -> str:
     return row["name"] if row else "Unknown customer"
 
 
-def customer_search_blob(row: sqlite3.Row) -> str:
+def customer_search_blob(row: sqlite3.Row | dict[str, Any]) -> str:
     fields = (
         "name",
         "company",
         "email",
         "phone",
         "address",
+        "city",
+        "zip_code",
         "products_interest",
         "area_zip",
     )
@@ -1900,11 +2306,19 @@ def save_customer_cart(customer_id: int | None, cart: list[dict[str, Any]] | Non
 def save_customer_wishlist(customer_id: int | None, wishlist: list[dict[str, Any]] | None = None) -> None:
     if not customer_id:
         return
-    payload = json.dumps(wishlist if wishlist is not None else wishlist_from_cart(), ensure_ascii=False)
+    wishlist_payload = wishlist if wishlist is not None else wishlist_from_cart()
+    payload = json.dumps(wishlist_payload, ensure_ascii=False)
+    now = datetime.now().isoformat(timespec="seconds")
+    if supabase_customers_enabled():
+        try:
+            supabase_update_customer(int(customer_id), {"wishlist": wishlist_payload, "updated_at": now})
+            return
+        except Exception as exc:
+            warn_supabase_fallback(f"Supabase wishlist sync failed, saving wishlist locally for now. {exc}")
     with db_connect() as conn:
         conn.execute(
             "UPDATE customers SET wishlist = ?, updated_at = ? WHERE id = ?",
-            (payload, datetime.now().isoformat(timespec="seconds"), int(customer_id)),
+            (payload, now, int(customer_id)),
         )
 
 
@@ -1928,6 +2342,8 @@ def reset_quote_adjustments() -> None:
     st.session_state.quote_discount_type = "No discount"
     st.session_state.quote_discount_value = 0.0
     st.session_state.quote_installation_fee = 0.0
+    st.session_state.quote_shipping_fee = 0.0
+    st.session_state.quote_shipping_enabled = False
     st.session_state.quote_sales_tax_enabled = False
     st.session_state.quote_discount_percent_value = 0.0
     st.session_state.quote_discount_amount_value = 0.0
@@ -1997,6 +2413,7 @@ def order_summary_from_ordered_products(wishlist: list[dict[str, Any]]) -> dict[
     product_total = wishlist_total(ordered_items)
     tax = product_total * FIXED_SALES_TAX_RATE
     installation = 0.0
+    shipping = 0.0
     return {
         "quote_number": "",
         "subtotal": product_total,
@@ -2004,7 +2421,8 @@ def order_summary_from_ordered_products(wishlist: list[dict[str, Any]]) -> dict[
         "tax": tax,
         "tax_rate": FIXED_SALES_TAX_RATE * 100,
         "installation": installation,
-        "total": product_total + tax + installation,
+        "shipping": shipping,
+        "total": product_total + tax + installation + shipping,
         "product_total": product_total,
     }
 
@@ -2019,6 +2437,7 @@ def order_summary_from_quote(row: sqlite3.Row | None, wishlist: list[dict[str, A
             tax = float(payload.get("tax") or row["tax"] or 0)
             tax_rate = float(payload.get("tax_rate") or 0)
             installation = float(payload.get("installation_fee") or 0)
+            shipping = float(payload.get("shipping_fee") or 0)
             total = float(payload.get("total") or row["total"] or 0)
             product_total = max(subtotal - discount, 0)
             return {
@@ -2028,6 +2447,7 @@ def order_summary_from_quote(row: sqlite3.Row | None, wishlist: list[dict[str, A
                 "tax": tax,
                 "tax_rate": tax_rate,
                 "installation": installation,
+                "shipping": shipping,
                 "total": total,
                 "product_total": product_total,
             }
@@ -2040,6 +2460,7 @@ def render_order_summary(summary: dict[str, float | str]) -> None:
     tax = float(summary["tax"])
     tax_rate = float(summary["tax_rate"])
     installation = float(summary["installation"])
+    shipping = float(summary.get("shipping") or 0)
     total = float(summary["total"])
     st.markdown(
         f"""
@@ -2048,6 +2469,7 @@ def render_order_summary(summary: dict[str, float | str]) -> None:
           <div style="display:flex;justify-content:space-between;margin:5px 0"><span>Items subtotal</span><span>{money(subtotal)}</span></div>
           <div style="display:flex;justify-content:space-between;margin:5px 0"><span>Discount</span><span>{'-' + money(discount) if discount else money(0)}</span></div>
           <div style="display:flex;justify-content:space-between;margin:5px 0"><span>Sales tax ({tax_rate:.2f}%)</span><span>{money(tax)}</span></div>
+          {f'<div style="display:flex;justify-content:space-between;margin:5px 0"><span>Shipping</span><span>{money(shipping)}</span></div>' if shipping else ''}
           <div style="display:flex;justify-content:space-between;margin:5px 0"><span>Installation</span><span>{money(installation)}</span></div>
           <div style="border-top:1px solid #dfe4e0;margin-top:9px;padding-top:9px;display:flex;justify-content:space-between;font-weight:800"><span>Order total</span><span>{money(total)}</span></div>
         </div>
@@ -2853,6 +3275,12 @@ def quote_installation_fee() -> float:
     return max(float(st.session_state.get("quote_installation_fee", 0.0) or 0.0), 0.0)
 
 
+def quote_shipping_fee() -> float:
+    if not st.session_state.get("quote_shipping_enabled", False):
+        return 0.0
+    return max(float(st.session_state.get("quote_shipping_fee", 0.0) or 0.0), 0.0)
+
+
 def sync_cart_item_price(item: dict[str, Any], unit_price: float) -> None:
     quantity = int(item.get("quantity", 1) or 1)
     original_unit = float(item.get("original_unit_price", item.get("unit_price", unit_price)) or 0.0)
@@ -2983,6 +3411,17 @@ def save_customer(customer_id: int | None, data: dict[str, Any]) -> int:
         if owner:
             data = {**data, "assigned_to": owner}
     data = {**data, "updated_at": now}
+    if supabase_customers_enabled():
+        save_payload = dict(data)
+        if not customer_id:
+            save_payload["created_at"] = now
+        try:
+            saved_customer_id = supabase_save_customer(customer_id, save_payload)
+            mirror_customer_to_sqlite(saved_customer_id, {**save_payload, "id": saved_customer_id})
+            return saved_customer_id
+        except Exception as exc:
+            st.error(f"Customer could not be saved to Supabase: {exc}")
+            raise
     with db_connect() as conn:
         if customer_id:
             assignments = ", ".join(f"{key} = ?" for key in data)
@@ -3045,12 +3484,19 @@ def update_customer_status(
                 if production_required_items(updated_wishlist):
                     updates["install_followup_date"] = (order_day + timedelta(days=70)).isoformat()
 
-    with db_connect() as conn:
-        assignments = ", ".join(f"{key} = ?" for key in updates)
-        conn.execute(
-            f"UPDATE customers SET {assignments} WHERE id = ?",
-            [*updates.values(), customer_id],
-        )
+    if supabase_customers_enabled():
+        try:
+            supabase_update_customer(customer_id, updates)
+        except Exception as exc:
+            st.error(f"Customer status could not be saved to Supabase: {exc}")
+            raise
+    else:
+        with db_connect() as conn:
+            assignments = ", ".join(f"{key} = ?" for key in updates)
+            conn.execute(
+                f"UPDATE customers SET {assignments} WHERE id = ?",
+                [*updates.values(), customer_id],
+            )
     add_customer_timeline_event(customer_id, date.today(), title, notes)
     if inventory_messages:
         add_customer_timeline_event(
@@ -3071,12 +3517,19 @@ def update_customer_status(
 def update_customer_basic_info(customer_id: int, data: dict[str, Any]) -> None:
     now = datetime.now().isoformat(timespec="seconds")
     updates = {**data, "updated_at": now}
-    with db_connect() as conn:
-        assignments = ", ".join(f"{key} = ?" for key in updates)
-        conn.execute(
-            f"UPDATE customers SET {assignments} WHERE id = ?",
-            [*updates.values(), customer_id],
-        )
+    if supabase_customers_enabled():
+        try:
+            supabase_update_customer(customer_id, updates)
+        except Exception as exc:
+            st.error(f"Customer information could not be saved to Supabase: {exc}")
+            raise
+    else:
+        with db_connect() as conn:
+            assignments = ", ".join(f"{key} = ?" for key in updates)
+            conn.execute(
+                f"UPDATE customers SET {assignments} WHERE id = ?",
+                [*updates.values(), customer_id],
+            )
     add_customer_timeline_event(
         customer_id,
         date.today(),
@@ -3088,11 +3541,18 @@ def update_customer_basic_info(customer_id: int, data: dict[str, Any]) -> None:
 def update_customer_owner(customer_id: int, assigned_to: str, previous_owner: str = "") -> None:
     assigned_to = assigned_to.strip()
     now = datetime.now().isoformat(timespec="seconds")
-    with db_connect() as conn:
-        conn.execute(
-            "UPDATE customers SET assigned_to = ?, updated_at = ? WHERE id = ?",
-            (assigned_to, now, customer_id),
-        )
+    if supabase_customers_enabled():
+        try:
+            supabase_update_customer(customer_id, {"assigned_to": assigned_to, "updated_at": now})
+        except Exception as exc:
+            st.error(f"Customer owner could not be saved to Supabase: {exc}")
+            raise
+    else:
+        with db_connect() as conn:
+            conn.execute(
+                "UPDATE customers SET assigned_to = ?, updated_at = ? WHERE id = ?",
+                (assigned_to, now, customer_id),
+            )
     from_label = previous_owner or "Unassigned"
     to_label = assigned_to or "Unassigned"
     add_customer_timeline_event(
@@ -3257,6 +3717,12 @@ def mark_wishlist_items_ordered(customer_id: int, wishlist: list[dict[str, Any]]
 
 
 def delete_customer(customer_id: int) -> None:
+    if supabase_customers_enabled():
+        try:
+            supabase_delete_customer(customer_id)
+        except Exception as exc:
+            st.error(f"Customer could not be deleted from Supabase: {exc}")
+            raise
     with db_connect() as conn:
         quote_rows = conn.execute(
             "SELECT quote_number FROM quotes WHERE customer_id = ?",
@@ -3265,7 +3731,8 @@ def delete_customer(customer_id: int) -> None:
         conn.execute("DELETE FROM customer_timeline WHERE customer_id = ?", (customer_id,))
         conn.execute("DELETE FROM customer_carts WHERE customer_id = ?", (customer_id,))
         conn.execute("DELETE FROM quotes WHERE customer_id = ?", (customer_id,))
-        conn.execute("DELETE FROM customers WHERE id = ?", (customer_id,))
+        if not supabase_customers_enabled():
+            conn.execute("DELETE FROM customers WHERE id = ?", (customer_id,))
     for quote_row in quote_rows:
         quote_path = OUTPUT_DIR / f"{quote_row[0]}.pdf"
         if quote_path.exists():
@@ -3361,7 +3828,10 @@ def city_from_zip(value: str) -> str:
     return ZIP_CITY_PREFIXES.get(match.group(1)[:3], "")
 
 
-def customer_city_label(row: sqlite3.Row) -> str:
+def customer_city_label(row: sqlite3.Row | dict[str, Any]) -> str:
+    saved_city = str(row_value(row, "city", "")).strip()
+    if saved_city:
+        return saved_city.title()
     address = row_value(row, "address")
     city = city_from_address(address)
     if city:
@@ -3401,7 +3871,7 @@ def upsert_customer_from_quote(
     quoted_status = "Ordered" if existing and existing["status"] == "Ordered" else "Following"
     product_total = max(float(quote.get("subtotal") or 0) - float(quote.get("discount") or 0), 0.0)
     first_payment_due = product_total * 0.5
-    second_payment_due = product_total * 0.5 + float(quote.get("tax") or 0) + float(quote.get("installation_fee") or 0)
+    second_payment_due = product_total * 0.5 + float(quote.get("tax") or 0) + float(quote.get("shipping_fee") or 0) + float(quote.get("installation_fee") or 0)
     payload = {
         "status": quoted_status,
         "name": customer.get("name", "").strip(),
@@ -5386,13 +5856,14 @@ def cart_metrics() -> tuple[float, float, float]:
     discounted_subtotal = max(subtotal - discount, 0.0)
     tax_rate = quote_tax_rate()
     tax = discounted_subtotal * tax_rate
-    return subtotal, tax, discounted_subtotal + tax + quote_installation_fee()
+    return subtotal, tax, discounted_subtotal + tax + quote_installation_fee() + quote_shipping_fee()
 
 
 def quote_adjustment_snapshot() -> dict[str, Any]:
     subtotal = sum(float(item.get("line_total", 0.0) or 0.0) for item in st.session_state.cart)
     discount, discount_label = cart_discount(subtotal)
     installation_fee = quote_installation_fee()
+    shipping_fee = quote_shipping_fee()
     tax_rate = quote_tax_rate()
     discounted_subtotal = max(subtotal - discount, 0.0)
     tax = discounted_subtotal * tax_rate
@@ -5401,10 +5872,12 @@ def quote_adjustment_snapshot() -> dict[str, Any]:
         "discount": discount,
         "discount_label": discount_label or "Discount",
         "installation_fee": installation_fee,
+        "shipping_fee": shipping_fee,
+        "shipping_enabled": bool(st.session_state.get("quote_shipping_enabled", False)),
         "tax_rate": tax_rate,
         "tax_rate_percent": tax_rate * 100,
         "tax": tax,
-        "total": discounted_subtotal + tax + installation_fee,
+        "total": discounted_subtotal + tax + installation_fee + shipping_fee,
         "discount_type": st.session_state.get("quote_discount_type", "No discount"),
         "discount_value": quote_discount_raw_value(),
         "tax_enabled": bool(st.session_state.get("quote_sales_tax_enabled", False)),
@@ -5568,6 +6041,21 @@ def cart_page() -> None:
             key="quote_installation_fee",
             help="Enter the installation/labor amount to add to this quote.",
         )
+        st.markdown("#### Shipping")
+        st.checkbox(
+            "Charge shipping",
+            key="quote_shipping_enabled",
+            help="Turn this on only when this quote should include a shipping/delivery charge.",
+        )
+        if st.session_state.get("quote_shipping_enabled", False):
+            st.number_input(
+                "Shipping fee ($)",
+                min_value=0.0,
+                value=float(st.session_state.quote_shipping_fee),
+                step=50.0,
+                key="quote_shipping_fee",
+                help="Enter the shipping or delivery amount to add to this quote.",
+            )
         st.markdown("#### Sales tax")
         st.checkbox(
             f"Calculate sales tax ({FIXED_SALES_TAX_RATE * 100:.2f}%)",
@@ -5580,12 +6068,18 @@ def cart_page() -> None:
         discount = float(adjustment_snapshot["discount"])
         discount_label = str(adjustment_snapshot["discount_label"])
         installation_fee = float(adjustment_snapshot["installation_fee"])
+        shipping_fee = float(adjustment_snapshot.get("shipping_fee") or 0.0)
         tax = float(adjustment_snapshot["tax"])
         total = float(adjustment_snapshot["total"])
         tax_label = quote_tax_label()
         tax_summary_line = (
             f'<div style="display:flex;justify-content:space-between;margin-top:10px"><span class="muted">{tax_label}</span><span>{money(tax)}</span></div>'
             if tax
+            else ""
+        )
+        shipping_summary_line = (
+            f'<div style="display:flex;justify-content:space-between;margin-top:10px"><span class="muted">Shipping</span><span>{money(shipping_fee)}</span></div>'
+            if shipping_fee
             else ""
         )
         st.markdown(
@@ -5596,6 +6090,7 @@ def cart_page() -> None:
               <div style="display:flex;justify-content:space-between;margin-top:10px"><span class="muted">Subtotal</span><span>{money(subtotal)}</span></div>
               <div style="display:flex;justify-content:space-between;margin-top:10px"><span class="muted">{discount_label or 'Discount'}</span><span>{'-' + money(discount) if discount else money(0)}</span></div>
               {tax_summary_line}
+              {shipping_summary_line}
               <div style="display:flex;justify-content:space-between;margin-top:10px"><span class="muted">Installation</span><span>{money(installation_fee)}</span></div>
               <div style="border-top:1px solid #536159;margin-top:18px;padding-top:16px"><span class="muted">Estimated total</span><div class="total">{money(total)}</div></div>
             </div>
@@ -5755,6 +6250,7 @@ def build_quote_pdf(quote: dict[str, Any]) -> bytes:
     discount_amount = float(quote.get("discount", 0.0) or 0.0)
     tax_amount = float(quote.get("tax", 0.0) or 0.0)
     installation_amount = float(quote.get("installation_fee", 0.0) or 0.0)
+    shipping_amount = float(quote.get("shipping_fee", 0.0) or 0.0)
     total_rows = [
         ["Subtotal", money(quote["subtotal"])],
     ]
@@ -5763,6 +6259,12 @@ def build_quote_pdf(quote: dict[str, Any]) -> bytes:
     total_rows.extend(
         [
             [f"Sales tax ({float(quote.get('tax_rate', 0.0) or 0.0):.2f}%)", money(tax_amount)],
+        ]
+    )
+    if shipping_amount > 0:
+        total_rows.append(["Shipping", money(shipping_amount)])
+    total_rows.extend(
+        [
             ["Installation", money(installation_amount)],
         ]
     )
@@ -5877,9 +6379,16 @@ def build_receipt_pdf(
         ["Items subtotal", money(float(summary["subtotal"]))],
         ["Discount", f"-{money(float(summary['discount']))}" if float(summary["discount"]) else money(0)],
         [f"Sales tax ({float(summary['tax_rate']):.2f}%)", money(float(summary["tax"]))],
-        ["Installation", money(float(summary["installation"]))],
-        [Paragraph("<b>ORDER TOTAL</b>", styles["Small"]), Paragraph(f"<b>{money(float(summary['total']))}</b>", styles["RightSmall"])],
     ]
+    shipping_amount = float(summary.get("shipping") or 0)
+    if shipping_amount > 0:
+        rows.append(["Shipping", money(shipping_amount)])
+    rows.extend(
+        [
+            ["Installation", money(float(summary["installation"]))],
+            [Paragraph("<b>ORDER TOTAL</b>", styles["Small"]), Paragraph(f"<b>{money(float(summary['total']))}</b>", styles["RightSmall"])],
+        ]
+    )
     table = Table(rows, colWidths=[2.0 * inch, 1.45 * inch], hAlign="RIGHT")
     total_row_index = len(rows) - 1
     table.setStyle(
@@ -6181,6 +6690,7 @@ def checkout_page() -> None:
     discount = float(adjustment_snapshot["discount"])
     discount_label = str(adjustment_snapshot.get("discount_label") or "Discount")
     installation_fee = float(adjustment_snapshot["installation_fee"])
+    shipping_fee = float(adjustment_snapshot.get("shipping_fee") or 0.0)
     tax = float(adjustment_snapshot["tax"])
     total = float(adjustment_snapshot["total"])
     tax_rate_percent = float(adjustment_snapshot["tax_rate_percent"])
@@ -6216,6 +6726,7 @@ def checkout_page() -> None:
                     discount = float(final_adjustment_snapshot["discount"])
                     discount_label = str(final_adjustment_snapshot.get("discount_label") or "Discount")
                     installation_fee = float(final_adjustment_snapshot["installation_fee"])
+                    shipping_fee = float(final_adjustment_snapshot.get("shipping_fee") or 0.0)
                     tax = float(final_adjustment_snapshot["tax"])
                     total = float(final_adjustment_snapshot["total"])
                     tax_rate_percent = float(final_adjustment_snapshot["tax_rate_percent"])
@@ -6233,6 +6744,8 @@ def checkout_page() -> None:
                         "tax_enabled": bool(final_adjustment_snapshot.get("tax_enabled", False)),
                         "tax_rate": tax_rate_percent,
                         "installation_fee": installation_fee,
+                        "shipping_fee": shipping_fee,
+                        "shipping_enabled": bool(final_adjustment_snapshot.get("shipping_enabled", False)),
                         "tax": tax,
                         "total": total,
                         "project_notes": project_notes,
@@ -6260,6 +6773,8 @@ def checkout_page() -> None:
         st.metric("Subtotal", money(subtotal))
         st.metric(discount_label or "Discount", f"-{money(discount)}" if discount else money(0))
         st.metric(f"Sales tax ({tax_rate_percent:.2f}%)", money(tax))
+        if shipping_fee > 0:
+            st.metric("Shipping", money(shipping_fee))
         st.metric("Installation", money(installation_fee))
         st.metric("Estimated total", money(total))
     if st.session_state.last_quote:
