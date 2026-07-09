@@ -3702,12 +3702,20 @@ def mark_wishlist_items_ordered(customer_id: int, wishlist: list[dict[str, Any]]
         "second_payment_paid": 0,
         "on_hold": 0,
     }
-    with db_connect() as conn:
-        assignments = ", ".join(f"{key} = ?" for key in updates)
-        conn.execute(
-            f"UPDATE customers SET {assignments} WHERE id = ?",
-            [*updates.values(), customer_id],
-        )
+    if supabase_customers_enabled():
+        try:
+            supabase_update_customer(customer_id, updates)
+            mirror_customer_to_sqlite(customer_id, {**updates, "id": customer_id})
+        except Exception as exc:
+            st.error(f"Ordered status could not be saved to Supabase: {exc}")
+            st.stop()
+    else:
+        with db_connect() as conn:
+            assignments = ", ".join(f"{key} = ?" for key in updates)
+            conn.execute(
+                f"UPDATE customers SET {assignments} WHERE id = ?",
+                [*updates.values(), customer_id],
+            )
     save_customer_cart(customer_id, selected_items)
     add_customer_timeline_event(
         customer_id,
