@@ -4001,11 +4001,18 @@ def customer_editor(existing: sqlite3.Row | None = None, form_key: str = "custom
             )
             budget = st.number_input("Estimated budget", min_value=0.0, value=float(existing["budget"] or 0) if is_edit else 0.0, step=100.0)
             if is_manager_user():
-                owner_options = customer_owner_options(row_value(existing, "assigned_to"))
+                owner_default = row_value(existing, "assigned_to") if is_edit else default_customer_owner()
+                owner_options = customer_owner_options(owner_default)
+                owner_key = f"{form_key}-assigned-to"
+                owner_mode = f"edit-{row_value(existing, 'id')}" if is_edit else f"new-{default_customer_owner()}"
+                if st.session_state.get(f"{owner_key}-mode") != owner_mode:
+                    st.session_state[owner_key] = owner_default if owner_default in owner_options else owner_options[0]
+                    st.session_state[f"{owner_key}-mode"] = owner_mode
                 assigned_to = st.selectbox(
                     "Owner / sales rep",
                     owner_options,
-                    index=option_index(owner_options, row_value(existing, "assigned_to") or default_customer_owner()),
+                    index=option_index(owner_options, st.session_state.get(owner_key) or owner_default),
+                    key=owner_key,
                 )
             else:
                 assigned_to = current_employee_name()
@@ -4224,6 +4231,10 @@ def customer_editor(existing: sqlite3.Row | None = None, form_key: str = "custom
                 )
             st.session_state.customer_editor_id = saved_id
             st.session_state.wishlist_draft = []
+            if not is_edit:
+                owner_key = f"{form_key}-assigned-to"
+                st.session_state.pop(owner_key, None)
+                st.session_state.pop(f"{owner_key}-mode", None)
             st.success(f"{name.strip()} saved.")
             st.rerun()
 
@@ -4619,6 +4630,10 @@ def customers_page() -> None:
         """,
         unsafe_allow_html=True,
     )
+    if supabase_customers_enabled():
+        st.caption("Customer database: Supabase connected. New customers and customer edits should be saved to the backend database.")
+    else:
+        st.warning("Customer database is not connected to Supabase. Customers created now will be saved locally only and will not appear in the Supabase backend.")
     search = st.text_input("Search customers", placeholder="Search name, email, phone, address or interested products...")
     rows = customer_rows(search=search.strip())
     customer_summary_metrics(rows)
