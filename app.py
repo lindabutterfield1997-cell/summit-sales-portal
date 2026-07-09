@@ -1502,6 +1502,11 @@ def supabase_request(method: str, table: str, query: str = "", payload: Any | No
     except url_error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")
         raise RuntimeError(f"Supabase request failed: {exc.code} {detail}") from exc
+    except url_error.URLError as exc:
+        raise RuntimeError(
+            "Supabase connection failed. Please check SUPABASE_URL in Streamlit Secrets. "
+            "It should look like https://your-project-ref.supabase.co"
+        ) from exc
     if not body:
         return []
     return json.loads(body)
@@ -3421,7 +3426,7 @@ def save_customer(customer_id: int | None, data: dict[str, Any]) -> int:
             return saved_customer_id
         except Exception as exc:
             st.error(f"Customer could not be saved to Supabase: {exc}")
-            raise
+            st.stop()
     with db_connect() as conn:
         if customer_id:
             assignments = ", ".join(f"{key} = ?" for key in data)
