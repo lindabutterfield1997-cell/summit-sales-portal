@@ -1032,9 +1032,19 @@ def customer_owner_filter() -> str:
 def customer_owner_options(current: str | None = "") -> tuple[str, ...]:
     current_value = (current or "").strip()
     options = list(SALES_ACCOUNTS)
-    if current_value and current_value not in options and current_value not in manager_accounts():
+    for manager_name in sorted(manager_accounts()):
+        if manager_name and manager_name not in options:
+            options.append(manager_name)
+    if current_value and current_value not in options:
         options.append(current_value)
     return tuple(options)
+
+
+def default_customer_owner() -> str:
+    employee = current_employee_name()
+    if employee:
+        return employee
+    return SALES_ACCOUNTS[-1] if SALES_ACCOUNTS else ""
 
 
 def valid_employee_login(username: str, password: str) -> bool:
@@ -3418,11 +3428,8 @@ def merge_duplicate_cart_items(cart: list[dict[str, Any]]) -> tuple[list[dict[st
 
 def save_customer(customer_id: int | None, data: dict[str, Any]) -> int:
     now = datetime.now().isoformat(timespec="seconds")
-    if is_manager_user():
-        if not data.get("assigned_to"):
-            data = {**data, "assigned_to": SALES_ACCOUNTS[-1]}
-    else:
-        owner = current_employee_name()
+    if not data.get("assigned_to"):
+        owner = default_customer_owner()
         if owner:
             data = {**data, "assigned_to": owner}
     data = {**data, "updated_at": now}
@@ -3922,7 +3929,7 @@ def upsert_customer_from_quote(
         "initial_contact_date": row_value(existing, "initial_contact_date", today_iso()) or today_iso(),
         "priority": row_value(existing, "priority", "Medium") or "Medium",
         "budget": float(quote.get("total") or 0),
-        "assigned_to": row_value(existing, "assigned_to") or (SALES_ACCOUNTS[-1] if is_manager_user() else current_employee_name()),
+        "assigned_to": row_value(existing, "assigned_to") or default_customer_owner(),
         "notes": notes,
         "first_followup_date": first_followup.isoformat(),
         "next_followup_date": second_followup.isoformat(),
@@ -3998,7 +4005,7 @@ def customer_editor(existing: sqlite3.Row | None = None, form_key: str = "custom
                 assigned_to = st.selectbox(
                     "Owner / sales rep",
                     owner_options,
-                    index=option_index(owner_options, row_value(existing, "assigned_to") or SALES_ACCOUNTS[-1]),
+                    index=option_index(owner_options, row_value(existing, "assigned_to") or default_customer_owner()),
                 )
             else:
                 assigned_to = current_employee_name()
@@ -4330,7 +4337,7 @@ def render_customer_basic_info_editor(row: sqlite3.Row) -> None:
                 assigned_to = st.selectbox(
                     "Owner",
                     owner_options,
-                    index=option_index(owner_options, row["assigned_to"] or SALES_ACCOUNTS[-1]),
+                    index=option_index(owner_options, row["assigned_to"] or default_customer_owner()),
                 )
             else:
                 assigned_to = current_employee_name()
@@ -4389,7 +4396,7 @@ def customer_card(row: sqlite3.Row) -> None:
                 selected_owner = st.selectbox(
                     "Assign sales rep",
                     owner_options,
-                    index=option_index(owner_options, row_value(row, "assigned_to") or SALES_ACCOUNTS[-1]),
+                    index=option_index(owner_options, row_value(row, "assigned_to") or default_customer_owner()),
                     key=f"assign-owner-{row['id']}",
                 )
             with save_owner_col:
