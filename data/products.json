@@ -1750,6 +1750,51 @@
     "stock_information": ""
   },
   {
+    "id": "SD-660",
+    "section": "Doors",
+    "category": "Sliding Door",
+    "name": "Sliding Door",
+    "subtitle": "Three-panel sliding door system",
+    "description": "Aluminum sliding door system with three large glass panels, clean black frame, and configurable opening direction.",
+    "base_rate": 50.0,
+    "minimum_price": 0.0,
+    "directions": [
+      "Left opening",
+      "Right opening",
+      "Center opening"
+    ],
+    "glass_colors": [
+      "Clear",
+      "Low-E",
+      "Grey",
+      "Bronze",
+      "Frosted"
+    ],
+    "frame_colors": [
+      "Black",
+      "White",
+      "Charcoal",
+      "Bronze",
+      "Anodized"
+    ],
+    "accent": "#64746a",
+    "hero_image": "uploads/sd-660-sliding-door-3x2.webp",
+    "detail_images": [
+      "uploads/sd-660-sliding-door-3x2.webp"
+    ],
+    "active": true,
+    "updated_at": "2026-07-09T16:11:00",
+    "color_options": [
+      "Black",
+      "White",
+      "Charcoal",
+      "Bronze",
+      "Anodized"
+    ],
+    "color_information": "",
+    "stock_information": ""
+  },
+  {
     "id": "WD-670",
     "section": "Doors",
     "category": "Wood Door",
