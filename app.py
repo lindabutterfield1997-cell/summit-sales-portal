@@ -1478,8 +1478,18 @@ def supabase_api_key() -> str:
     return secret_or_env("SUPABASE_SERVICE_KEY") or secret_or_env("SUPABASE_KEY")
 
 
+def supabase_base_url() -> str:
+    raw_url = secret_or_env("SUPABASE_URL").strip().rstrip("/")
+    if raw_url.endswith("/rest/v1"):
+        raw_url = raw_url[: -len("/rest/v1")]
+    parsed = parse.urlsplit(raw_url)
+    if parsed.scheme and parsed.netloc and parsed.netloc.endswith(".supabase.co"):
+        return f"{parsed.scheme}://{parsed.netloc}"
+    return raw_url
+
+
 def supabase_request(method: str, table: str, query: str = "", payload: Any | None = None, prefer: str = "return=representation") -> Any:
-    base_url = secret_or_env("SUPABASE_URL").rstrip("/")
+    base_url = supabase_base_url()
     api_key = supabase_api_key()
     if not base_url or not api_key:
         raise RuntimeError("Supabase is not configured.")
