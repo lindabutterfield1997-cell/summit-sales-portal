@@ -3021,6 +3021,48 @@ def wishlist_total(wishlist: list[dict[str, Any]]) -> float:
     return sum(float(item.get("line_total") or 0) for item in wishlist)
 
 
+def wishlist_merge_key(item: dict[str, Any]) -> tuple[Any, ...]:
+    return (
+        str(item.get("product_id") or item.get("name") or "").strip().lower(),
+        round(float(item.get("width") or 0), 3),
+        round(float(item.get("height") or 0), 3),
+        str(item.get("direction") or "").strip().lower(),
+        str(item.get("glass") or "").strip().lower(),
+        str(item.get("frame") or "").strip().lower(),
+        str(item.get("color") or "").strip().lower(),
+        str(item.get("notes") or "").strip().lower(),
+        round(float(item.get("unit_price") or 0), 2),
+        str(item.get("order_status") or "Wishlist").strip().lower(),
+    )
+
+
+def append_wishlist_items(existing_wishlist: list[dict[str, Any]], new_items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    merged = [dict(item) for item in existing_wishlist]
+    for new_item_raw in new_items:
+        new_item = dict(new_item_raw)
+        new_item.setdefault("order_status", "Wishlist")
+        match = next((item for item in merged if wishlist_merge_key(item) == wishlist_merge_key(new_item)), None)
+        if match:
+            match["quantity"] = int(match.get("quantity") or 1) + int(new_item.get("quantity") or 1)
+            match["unit_price"] = float(match.get("unit_price") or new_item.get("unit_price") or 0.0)
+            match["line_total"] = float(match.get("unit_price") or 0.0) * int(match["quantity"])
+        else:
+            merged.append(new_item)
+    return merged
+
+
+def append_cart_to_customer_wishlist(customer_id: int | None) -> tuple[int, int]:
+    current_wishlist = wishlist_from_cart()
+    if not customer_id:
+        st.session_state.wishlist_draft = append_wishlist_items(st.session_state.get("wishlist_draft", []), current_wishlist)
+        return len(st.session_state.wishlist_draft), len(current_wishlist)
+    customer = customer_by_id(int(customer_id))
+    existing_wishlist = parse_wishlist(row_value(customer, "wishlist") if customer else None)
+    merged_wishlist = append_wishlist_items(existing_wishlist, current_wishlist)
+    save_customer_wishlist(int(customer_id), merged_wishlist)
+    return len(merged_wishlist), len(current_wishlist)
+
+
 def item_color_label(item: dict[str, Any]) -> str:
     value = str(item.get("color") or "").strip()
     if not value:
@@ -4033,6 +4075,9 @@ def upsert_customer_from_quote(
     product_total = max(float(quote.get("subtotal") or 0) - float(quote.get("discount") or 0), 0.0)
     first_payment_due = product_total * 0.5
     second_payment_due = product_total * 0.5 + float(quote.get("tax") or 0) + float(quote.get("shipping_fee") or 0) + float(quote.get("installation_fee") or 0)
+    existing_wishlist_for_quote = parse_wishlist(row_value(existing, "wishlist") if existing else None)
+    quote_cart_wishlist = wishlist_from_cart()
+    merged_quote_wishlist = append_wishlist_items(existing_wishlist_for_quote, quote_cart_wishlist) if existing else quote_cart_wishlist
     payload = {
         "status": quoted_status,
         "name": customer.get("name", "").strip(),
@@ -4076,7 +4121,7 @@ def upsert_customer_from_quote(
         "lost_date": row_value(existing, "lost_date", today_iso()),
         "lost_reason": row_value(existing, "lost_reason"),
         "lost_notes": row_value(existing, "lost_notes"),
-        "wishlist": row_value(existing, "wishlist") if quoted_status == "Ordered" and row_value(existing, "wishlist") else json.dumps(wishlist_from_cart(), ensure_ascii=False),
+        "wishlist": row_value(existing, "wishlist") if quoted_status == "Ordered" and row_value(existing, "wishlist") else json.dumps(merged_quote_wishlist, ensure_ascii=False),
     }
     customer_id = save_customer(int(existing["id"]) if existing else None, payload)
     add_customer_timeline_event(customer_id, date.today(), "Quote created", quote_note, quote["quote_number"])
@@ -4292,9 +4337,9 @@ def customer_editor(existing: sqlite3.Row | None = None, form_key: str = "custom
                 st.error("Customer name is required.")
                 return
             if use_cart_wishlist and st.session_state.cart:
-                wishlist_to_save = wishlist_from_cart()
+                wishlist_to_save = append_wishlist_items(existing_wishlist, wishlist_from_cart()) if is_edit else wishlist_from_cart()
             elif use_cart_wishlist and drafted_wishlist:
-                wishlist_to_save = drafted_wishlist
+                wishlist_to_save = append_wishlist_items(existing_wishlist, drafted_wishlist) if is_edit else drafted_wishlist
             elif selected_products and not (is_edit and existing["status"] == "Ordered"):
                 wishlist_to_save = wishlist_from_products(selected_products)
             else:
@@ -6297,21 +6342,20 @@ def cart_page() -> None:
         if st.button("Create customer quote", type="primary", width="stretch"):
             st.session_state.checkout_quote_adjustments = quote_adjustment_snapshot()
             save_customer_cart(st.session_state.active_customer_id)
-            current_wishlist = wishlist_from_cart()
-            if st.session_state.active_customer_id:
-                save_customer_wishlist(st.session_state.active_customer_id, current_wishlist)
-            else:
-                st.session_state.wishlist_draft = current_wishlist
             st.session_state.page = "Checkout"
             st.rerun()
         if st.session_state.active_customer_id and st.button("Save cart to this customer", width="stretch"):
             save_customer_cart(st.session_state.active_customer_id)
             st.success("Customer cart saved.")
         if st.button("Save cart as customer wishlist", width="stretch"):
-            st.session_state.wishlist_draft = wishlist_from_cart()
-            st.session_state.customer_editor_id = None
-            st.session_state.page = "Customers"
-            st.rerun()
+            if st.session_state.active_customer_id:
+                total_items, added_items = append_cart_to_customer_wishlist(st.session_state.active_customer_id)
+                st.success(f"Added {added_items} cart item(s) to this customer's wishlist. Wishlist now has {total_items} item(s).")
+            else:
+                st.session_state.wishlist_draft = append_wishlist_items(st.session_state.get("wishlist_draft", []), wishlist_from_cart())
+                st.session_state.customer_editor_id = None
+                st.session_state.page = "Customers"
+                st.rerun()
         if st.button("Continue shopping", width="stretch"):
             st.session_state.page = "Catalog"
             st.rerun()
