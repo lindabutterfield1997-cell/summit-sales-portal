@@ -2194,6 +2194,20 @@ def find_customer_by_contact(email: str, phone: str) -> sqlite3.Row | dict[str, 
     return sqlite_find_customer_by_contact(email, phone)
 
 
+def customer_matches_checkout_payload(existing: sqlite3.Row | dict[str, Any] | None, payload: dict[str, Any]) -> bool:
+    if not existing:
+        return False
+    existing_email = str(row_value(existing, "email", "") or "").strip().lower()
+    payload_email = str(payload.get("email") or "").strip().lower()
+    existing_phone = re.sub(r"\D+", "", str(row_value(existing, "phone", "") or ""))
+    payload_phone = re.sub(r"\D+", "", str(payload.get("phone") or ""))
+    existing_name = re.sub(r"\s+", " ", str(row_value(existing, "name", "") or "").strip().lower())
+    payload_name = re.sub(r"\s+", " ", str(payload.get("name") or "").strip().lower())
+    if payload_email or payload_phone:
+        return bool(payload_email and existing_email and payload_email == existing_email) or bool(payload_phone and existing_phone and payload_phone == existing_phone)
+    return bool(payload_name and existing_name and payload_name == existing_name)
+
+
 def sqlite_find_customer_by_contact(email: str, phone: str) -> sqlite3.Row | None:
     owner = customer_owner_filter()
     owner_clause = " AND lower(assigned_to) = lower(?)" if owner else ""
@@ -6785,6 +6799,9 @@ def checkout_page() -> None:
                     tax_rate_percent = float(final_adjustment_snapshot["tax_rate_percent"])
                     now = datetime.now()
                     customer_payload = {"name": name, "company": company, "email": email, "phone": format_us_phone(phone), "address": address}
+                    quote_customer_id = st.session_state.active_customer_id
+                    if active_customer and not customer_matches_checkout_payload(active_customer, customer_payload):
+                        quote_customer_id = None
                     quote = {
                         "quote_number": quote_number(),
                         "created_at": now.strftime("%B %d, %Y"),
@@ -6802,7 +6819,7 @@ def checkout_page() -> None:
                         "tax": tax,
                         "total": total,
                         "project_notes": project_notes,
-                        "customer_id": st.session_state.active_customer_id,
+                        "customer_id": quote_customer_id,
                     }
                     customer_id = upsert_customer_from_quote(customer_payload, quote, first_followup, second_followup)
                     quote["customer_id"] = customer_id
