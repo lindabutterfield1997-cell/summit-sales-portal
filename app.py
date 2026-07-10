@@ -2453,10 +2453,11 @@ def ordered_wishlist_items(wishlist: list[dict[str, Any]]) -> list[dict[str, Any
 
 def quote_items_match_ordered_products(payload: dict[str, Any], wishlist: list[dict[str, Any]]) -> bool:
     quote_items = payload.get("items")
-    if not isinstance(quote_items, list) or len(quote_items) != len(wishlist):
+    comparable_wishlist = [item for item in wishlist if bool(item.get("included_in_quote", True))]
+    if not isinstance(quote_items, list) or len(quote_items) != len(comparable_wishlist):
         return False
     quote_keys = [order_item_match_key(item) for item in quote_items if isinstance(item, dict)]
-    wishlist_keys = [order_item_match_key(item) for item in wishlist if isinstance(item, dict)]
+    wishlist_keys = [order_item_match_key(item) for item in comparable_wishlist if isinstance(item, dict)]
     return len(quote_keys) == len(wishlist_keys) and sorted(quote_keys) == sorted(wishlist_keys)
 
 
@@ -3004,6 +3005,7 @@ def wishlist_from_cart() -> list[dict[str, Any]]:
                 "quantity": item.get("quantity", 1),
                 "unit_price": item.get("unit_price", 0),
                 "line_total": item.get("line_total", 0),
+                "included_in_quote": cart_item_included(item),
                 "notes": item.get("notes", ""),
             }
         )
@@ -3589,6 +3591,9 @@ def normalize_cart_item(item: dict[str, Any], index: int = 0) -> bool:
     if "price_adjusted" not in item:
         item["price_adjusted"] = abs(float(item.get("unit_price", 0.0) or 0.0) - float(item.get("original_unit_price", 0.0) or 0.0)) > 0.005
         changed = True
+    if "included_in_quote" not in item:
+        item["included_in_quote"] = True
+        changed = True
     return changed
 
 
@@ -3605,6 +3610,7 @@ def cart_merge_key(item: dict[str, Any]) -> tuple[Any, ...]:
         round(float(item.get("unit_price") or 0), 2),
         round(float(item.get("original_unit_price", item.get("unit_price", 0)) or 0), 2),
         bool(item.get("price_adjusted")),
+        cart_item_included(item),
     )
 
 
@@ -3614,6 +3620,7 @@ def add_or_merge_cart_item(new_item: dict[str, Any]) -> bool:
         normalize_cart_item(existing)
         if cart_merge_key(existing) == new_key:
             existing["quantity"] = int(existing.get("quantity") or 1) + int(new_item.get("quantity") or 1)
+            existing["included_in_quote"] = cart_item_included(existing) or cart_item_included(new_item)
             existing["line_total"] = float(existing.get("unit_price") or 0) * int(existing["quantity"])
             return True
     st.session_state.cart.append(new_item)
@@ -3630,6 +3637,7 @@ def merge_duplicate_cart_items(cart: list[dict[str, Any]]) -> tuple[list[dict[st
         match = next((existing for existing in merged_items if cart_merge_key(existing) == item_key), None)
         if match:
             match["quantity"] = int(match.get("quantity") or 1) + int(item.get("quantity") or 1)
+            match["included_in_quote"] = cart_item_included(match) or cart_item_included(item)
             match["line_total"] = float(match.get("unit_price") or 0) * int(match["quantity"])
             changed = True
         else:
@@ -6089,6 +6097,7 @@ def configure_page(product: Product) -> None:
                 "line_total": sales_unit_price * quantity,
                 "price_adjusted": price_adjusted_by_rate,
                 "price_adjustment_mode": "rate" if price_adjusted_by_rate else "",
+                "included_in_quote": True,
                 "notes": notes,
             }
             merged = add_or_merge_cart_item(item)
@@ -6098,8 +6107,21 @@ def configure_page(product: Product) -> None:
     product_info_panel(product)
 
 
+
+def cart_item_included(item: dict[str, Any]) -> bool:
+    return bool(item.get("included_in_quote", True))
+
+
+def included_cart_items(cart: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
+    source = st.session_state.cart if cart is None else cart
+    return [item for item in source if cart_item_included(item)]
+
+
+def cart_subtotal(cart: list[dict[str, Any]] | None = None) -> float:
+    return sum(float(item.get("line_total", 0.0) or 0.0) for item in included_cart_items(cart))
+
 def cart_metrics() -> tuple[float, float, float]:
-    subtotal = sum(float(item.get("line_total", 0.0) or 0.0) for item in st.session_state.cart)
+    subtotal = cart_subtotal()
     discount, _ = cart_discount(subtotal)
     discounted_subtotal = max(subtotal - discount, 0.0)
     tax_rate = quote_tax_rate()
@@ -6108,7 +6130,7 @@ def cart_metrics() -> tuple[float, float, float]:
 
 
 def quote_adjustment_snapshot() -> dict[str, Any]:
-    subtotal = sum(float(item.get("line_total", 0.0) or 0.0) for item in st.session_state.cart)
+    subtotal = cart_subtotal()
     discount, discount_label = cart_discount(subtotal)
     installation_fee = quote_installation_fee()
     shipping_fee = quote_shipping_fee()
@@ -6176,14 +6198,25 @@ def cart_page() -> None:
                 with image:
                     st.image(str(image_path(product, "hero")), width="stretch")
                 with info:
+                    included = cart_item_included(item)
                     color_label = item_color_label(item)
                     color_line = f" · {color_label}" if color_label else ""
                     area_sqft = float(item.get("area_sqft") or (float(item.get("width") or 0) * float(item.get("height") or 0) / 144))
-                    st.markdown(
+                    item_summary = (
                         f"**{item['name']}**  \n"
                         f'{item["width"]:.1f}" W × {item["height"]:.1f}" H · {area_sqft:.2f} sq ft · {item["direction"]}  \n'
                         f"{item['glass']} glass · {item['frame']} finish{color_line} · Qty {item['quantity']}"
                     )
+                    if included:
+                        st.markdown(item_summary)
+                    else:
+                        st.markdown(
+                            f"<div style='opacity:.42'><b>{html.escape(str(item['name']))}</b><br/>"
+                            f"{float(item['width']):.1f}&quot; W × {float(item['height']):.1f}&quot; H · {area_sqft:.2f} sq ft · {html.escape(str(item['direction']))}<br/>"
+                            f"{html.escape(str(item['glass']))} glass · {html.escape(str(item['frame']))} finish{html.escape(color_line)} · Qty {int(item['quantity'])}</div>",
+                            unsafe_allow_html=True,
+                        )
+                        st.caption("Excluded from quote / order total")
                     edit_state_key = f"cart-edit-{line_id}"
                     if st.session_state.get(edit_state_key, False):
                         direction_options = option_tuple_with_current(product.directions, str(item.get("direction") or ""))
@@ -6303,6 +6336,14 @@ def cart_page() -> None:
                     if item.get("price_adjusted"):
                         st.caption(f"Original calculated unit price: {money(float(item.get('original_unit_price', 0.0)))}")
                 with action:
+                    include_key = f"include-{line_id}"
+                    if include_key not in st.session_state:
+                        st.session_state[include_key] = cart_item_included(item)
+                    include_item = st.checkbox("Include", key=include_key, help="Only included items are counted in quote totals.")
+                    if include_item != cart_item_included(item):
+                        item["included_in_quote"] = bool(include_item)
+                        save_customer_cart(st.session_state.active_customer_id)
+                        st.rerun()
                     edit_state_key = f"cart-edit-{line_id}"
                     edit_label = "Done" if st.session_state.get(edit_state_key, False) else "Edit"
                     if st.button(edit_label, key=f"edit-{line_id}", type="secondary"):
@@ -6386,7 +6427,7 @@ def cart_page() -> None:
             f"""
             <div class="summary-card">
               <div class="eyebrow" style="color:#b9c7bf">Project summary</div>
-              <div style="display:flex;justify-content:space-between;margin-top:18px"><span class="muted">Products</span><span>{len(st.session_state.cart)}</span></div>
+              <div style="display:flex;justify-content:space-between;margin-top:18px"><span class="muted">Products included</span><span>{len(included_cart_items())} / {len(st.session_state.cart)}</span></div>
               <div style="display:flex;justify-content:space-between;margin-top:10px"><span class="muted">Subtotal</span><span>{money(subtotal)}</span></div>
               <div style="display:flex;justify-content:space-between;margin-top:10px"><span class="muted">{discount_label or 'Discount'}</span><span>{'-' + money(discount) if discount else money(0)}</span></div>
               {tax_summary_line}
@@ -6398,7 +6439,7 @@ def cart_page() -> None:
             unsafe_allow_html=True,
         )
         st.write("")
-        if st.button("Create customer quote", type="primary", width="stretch"):
+        if st.button("Create customer quote", type="primary", width="stretch", disabled=not included_cart_items()):
             st.session_state.checkout_quote_adjustments = quote_adjustment_snapshot()
             save_customer_cart(st.session_state.active_customer_id)
             st.session_state.page = "Checkout"
@@ -6970,9 +7011,10 @@ def send_quote_email(quote: dict[str, Any], pdf_bytes: bytes, subject: str, body
 
 
 def checkout_page() -> None:
-    if not st.session_state.cart:
+    if not st.session_state.cart or not included_cart_items():
         st.session_state.page = "Cart"
         st.rerun()
+    quote_items = included_cart_items()
     st.markdown('<div class="quote-head"><div class="eyebrow" style="color:#b9c7bf">Final step</div><h1 style="margin:5px 0;color:white">Create customer quote</h1><p style="color:#c4d0c9;margin:0">Enter customer details, review the estimate, then generate a PDF.</p></div>', unsafe_allow_html=True)
     form_col, review_col = st.columns([1.45, 0.75], gap="large")
     adjustment_snapshot = st.session_state.get("checkout_quote_adjustments") or quote_adjustment_snapshot()
@@ -7011,6 +7053,10 @@ def checkout_page() -> None:
                 elif second_followup < first_followup:
                     st.error("Second follow-up should be on or after the first follow-up.")
                 else:
+                    quote_items = included_cart_items()
+                    if not quote_items:
+                        st.error("Please include at least one cart item before generating a quote.")
+                        return
                     final_adjustment_snapshot = st.session_state.get("checkout_quote_adjustments") or quote_adjustment_snapshot()
                     subtotal = float(final_adjustment_snapshot["subtotal"])
                     discount = float(final_adjustment_snapshot["discount"])
@@ -7030,7 +7076,7 @@ def checkout_page() -> None:
                         "created_at": now.strftime("%B %d, %Y"),
                         "valid_until": datetime.fromtimestamp(now.timestamp() + 30 * 86400).strftime("%B %d, %Y"),
                         "customer": customer_payload,
-                        "items": [dict(item) for item in st.session_state.cart],
+                        "items": [dict(item) for item in quote_items],
                         "subtotal": subtotal,
                         "discount": discount,
                         "discount_label": discount_label,
@@ -7056,7 +7102,7 @@ def checkout_page() -> None:
                     st.success(f"Quote {quote['quote_number']} created and saved under {name}.")
     with review_col:
         st.markdown("### Quote review")
-        for item in st.session_state.cart:
+        for item in quote_items:
             color_label = item_color_label(item)
             color_note = f" · {color_label}" if color_label else ""
             st.markdown(f"**{item['name']} × {item['quantity']}**  \n{item['width']:.1f}\" × {item['height']:.1f}\"{color_note} · {money(item['line_total'])}")
