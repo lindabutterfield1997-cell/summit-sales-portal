@@ -214,6 +214,7 @@ def init_state() -> None:
         "quote_shipping_enabled": False,
         "quote_sales_tax_enabled": False,
         "checkout_quote_adjustments": None,
+        "checkout_order_adjustments": None,
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -345,6 +346,34 @@ def init_db() -> None:
             CREATE TABLE IF NOT EXISTS customer_carts (
                 customer_id INTEGER PRIMARY KEY,
                 updated_at TEXT NOT NULL,
+                payload TEXT NOT NULL,
+                FOREIGN KEY(customer_id) REFERENCES customers(id)
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS customer_orders (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                customer_id INTEGER NOT NULL,
+                order_number TEXT NOT NULL UNIQUE,
+                quote_number TEXT,
+                created_at TEXT NOT NULL,
+                order_date TEXT NOT NULL,
+                salesperson TEXT,
+                subtotal REAL DEFAULT 0,
+                discount REAL DEFAULT 0,
+                tax REAL DEFAULT 0,
+                installation REAL DEFAULT 0,
+                shipping REAL DEFAULT 0,
+                total REAL DEFAULT 0,
+                first_payment_date TEXT,
+                first_payment_amount REAL DEFAULT 0,
+                first_payment_paid INTEGER DEFAULT 0,
+                second_payment_enabled INTEGER DEFAULT 1,
+                second_payment_date TEXT,
+                second_payment_amount REAL DEFAULT 0,
+                second_payment_paid INTEGER DEFAULT 0,
                 payload TEXT NOT NULL,
                 FOREIGN KEY(customer_id) REFERENCES customers(id)
             )
@@ -2390,6 +2419,86 @@ def load_customer_cart(customer_id: int | None) -> list[dict[str, Any]]:
     return [item for item in data if isinstance(item, dict)]
 
 
+def order_number() -> str:
+    return "O-" + datetime.now().strftime("%Y%m%d-%H%M%S")
+
+
+def save_customer_order(customer_id: int, order: dict[str, Any]) -> int:
+    payload = json.dumps(order, ensure_ascii=False)
+    with db_connect() as conn:
+        cursor = conn.execute(
+            """
+            INSERT INTO customer_orders (
+                customer_id, order_number, quote_number, created_at, order_date, salesperson,
+                subtotal, discount, tax, installation, shipping, total,
+                first_payment_date, first_payment_amount, first_payment_paid,
+                second_payment_enabled, second_payment_date, second_payment_amount, second_payment_paid, payload
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                int(customer_id),
+                str(order.get("order_number") or order_number()),
+                str(order.get("quote_number") or ""),
+                str(order.get("created_at") or datetime.now().isoformat(timespec="seconds")),
+                str(order.get("order_date") or today_iso()),
+                str(order.get("salesperson") or ""),
+                float(order.get("subtotal") or 0),
+                float(order.get("discount") or 0),
+                float(order.get("tax") or 0),
+                float(order.get("installation_fee") or order.get("installation") or 0),
+                float(order.get("shipping_fee") or order.get("shipping") or 0),
+                float(order.get("total") or 0),
+                str(order.get("first_payment_date") or ""),
+                float(order.get("first_payment_amount") or 0),
+                int(bool(order.get("first_payment_paid", False))),
+                int(bool(order.get("second_payment_enabled", True))),
+                str(order.get("second_payment_date") or ""),
+                float(order.get("second_payment_amount") or 0),
+                int(bool(order.get("second_payment_paid", False))),
+                payload,
+            ),
+        )
+        return int(cursor.lastrowid)
+
+
+def customer_order_rows(customer_id: int | None = None) -> list[sqlite3.Row]:
+    with db_connect() as conn:
+        conn.row_factory = sqlite3.Row
+        if customer_id:
+            return conn.execute(
+                "SELECT * FROM customer_orders WHERE customer_id = ? ORDER BY order_date DESC, created_at DESC",
+                (int(customer_id),),
+            ).fetchall()
+        return conn.execute("SELECT * FROM customer_orders ORDER BY order_date DESC, created_at DESC").fetchall()
+
+
+def order_payload(row: sqlite3.Row) -> dict[str, Any]:
+    try:
+        data = json.loads(row["payload"] or "{}")
+    except (TypeError, ValueError):
+        data = {}
+    return data if isinstance(data, dict) else {}
+
+
+def latest_customer_order(customer_id: int) -> sqlite3.Row | None:
+    rows = customer_order_rows(customer_id)
+    return rows[0] if rows else None
+
+
+def order_summary_from_order_row(row: sqlite3.Row) -> dict[str, float | str]:
+    return {
+        "quote_number": row["order_number"] or "",
+        "subtotal": float(row["subtotal"] or 0),
+        "discount": float(row["discount"] or 0),
+        "tax": float(row["tax"] or 0),
+        "tax_rate": float(order_payload(row).get("tax_rate") or 0),
+        "installation": float(row["installation"] or 0),
+        "shipping": float(row["shipping"] or 0),
+        "total": float(row["total"] or 0),
+        "product_total": max(float(row["subtotal"] or 0) - float(row["discount"] or 0), 0.0),
+    }
+
+
 def reset_quote_adjustments() -> None:
     st.session_state.quote_discount_type = "No discount"
     st.session_state.quote_discount_value = 0.0
@@ -2400,6 +2509,7 @@ def reset_quote_adjustments() -> None:
     st.session_state.quote_discount_percent_value = 0.0
     st.session_state.quote_discount_amount_value = 0.0
     st.session_state.checkout_quote_adjustments = None
+    st.session_state.checkout_order_adjustments = None
 
 
 def set_active_customer(customer_id: int | None, load_cart: bool = True) -> None:
@@ -2591,6 +2701,33 @@ def render_payment_receipt(customer: sqlite3.Row, order_total: float) -> dict[st
         unsafe_allow_html=True,
     )
     return schedule
+
+
+def render_customer_orders(customer_id: int) -> None:
+    orders = customer_order_rows(customer_id)
+    if not orders:
+        return
+    st.markdown("### Customer orders / 客户订单")
+    for order_row in orders:
+        payload = order_payload(order_row)
+        items = payload.get("items", [])
+        if not isinstance(items, list):
+            items = []
+        paid_total = (float(order_row["first_payment_amount"] or 0) if order_row["first_payment_paid"] else 0.0)
+        if order_row["second_payment_enabled"] and order_row["second_payment_paid"]:
+            paid_total += float(order_row["second_payment_amount"] or 0)
+        balance = max(float(order_row["total"] or 0) - paid_total, 0.0)
+        with st.expander(f"{order_row['order_number']} · {display_date(order_row['order_date'])} · {money(float(order_row['total'] or 0))}", expanded=False):
+            st.caption(f"Sales: {order_row['salesperson'] or 'Unassigned'} · Paid: {money(paid_total)} · Balance: {money(balance)}")
+            for index, item in enumerate(items, start=1):
+                color_label = item_color_label(item)
+                color_note = f" · {color_label}" if color_label else ""
+                area_sqft = float(item.get("area_sqft") or (float(item.get("width") or 0) * float(item.get("height") or 0) / 144))
+                st.markdown(
+                    f"{index}. **{item.get('name', 'Product')} × {int(item.get('quantity') or 1)}**  \n"
+                    f"{float(item.get('width') or 0):.1f}\" W × {float(item.get('height') or 0):.1f}\" H · {area_sqft:.2f} sq ft · {item.get('direction', '')}{color_note}  \n"
+                    f"Line total: {money(float(item.get('line_total') or 0))}"
+                )
 
 
 def render_payment_schedule_editor(customer: sqlite3.Row, order_total: float) -> None:
@@ -2907,6 +3044,38 @@ def in_date_range(value: str | None, start: date, end: date) -> bool:
 
 
 def finance_order_records() -> list[dict[str, Any]]:
+    order_rows = customer_order_rows()
+    if order_rows:
+        records: list[dict[str, Any]] = []
+        for row in order_rows:
+            customer = sqlite_customer_by_id(int(row["customer_id"])) or customer_by_id(int(row["customer_id"]))
+            if customer_owner_filter() and customer and str(row_value(customer, "assigned_to", "")).lower() != customer_owner_filter().lower():
+                continue
+            records.append(
+                {
+                    "customer_id": int(row["customer_id"]),
+                    "customer": row_value(customer, "name", "Unknown customer") if customer else "Unknown customer",
+                    "company": row_value(customer, "company", "") if customer else "",
+                    "sales": row["salesperson"] or row_value(customer, "assigned_to", "Unassigned") if customer else row["salesperson"] or "Unassigned",
+                    "order_date": row["order_date"] or "",
+                    "quote_number": row["quote_number"] or row["order_number"] or "",
+                    "order_total": float(row["total"] or 0),
+                    "product_total": max(float(row["subtotal"] or 0) - float(row["discount"] or 0), 0.0),
+                    "tax": float(row["tax"] or 0),
+                    "installation": float(row["installation"] or 0),
+                    "first_payment_date": row["first_payment_date"] or "",
+                    "first_payment_amount": float(row["first_payment_amount"] or 0),
+                    "first_payment_paid": bool(row["first_payment_paid"]),
+                    "second_payment_enabled": bool(row["second_payment_enabled"]),
+                    "second_payment_date": row["second_payment_date"] or "",
+                    "second_payment_amount": float(row["second_payment_amount"] or 0),
+                    "second_payment_paid": bool(row["second_payment_paid"]),
+                    "paid_total": (float(row["first_payment_amount"] or 0) if row["first_payment_paid"] else 0.0) + (float(row["second_payment_amount"] or 0) if row["second_payment_enabled"] and row["second_payment_paid"] else 0.0),
+                    "balance": max(float(row["total"] or 0) - ((float(row["first_payment_amount"] or 0) if row["first_payment_paid"] else 0.0) + (float(row["second_payment_amount"] or 0) if row["second_payment_enabled"] and row["second_payment_paid"] else 0.0)), 0.0),
+                }
+            )
+        return records
+
     records: list[dict[str, Any]] = []
     for customer in company_customer_rows(status="Ordered"):
         wishlist = parse_wishlist(customer["wishlist"])
@@ -3982,6 +4151,7 @@ def delete_customer(customer_id: int) -> None:
         ).fetchall()
         conn.execute("DELETE FROM customer_timeline WHERE customer_id = ?", (customer_id,))
         conn.execute("DELETE FROM customer_carts WHERE customer_id = ?", (customer_id,))
+        conn.execute("DELETE FROM customer_orders WHERE customer_id = ?", (customer_id,))
         conn.execute("DELETE FROM quotes WHERE customer_id = ?", (customer_id,))
         if not supabase_customers_enabled():
             conn.execute("DELETE FROM customers WHERE id = ?", (customer_id,))
@@ -4686,15 +4856,20 @@ def customer_card(row: sqlite3.Row) -> None:
                 st.rerun()
 
         wishlist = parse_wishlist(row["wishlist"])
-        order_summary = order_summary_from_quote(
-            latest_customer_quote(int(row["id"])) if row["status"] == "Ordered" else None,
-            wishlist,
+        latest_order_row = latest_customer_order(int(row["id"])) if row["status"] == "Ordered" else None
+        latest_order_payload = order_payload(latest_order_row) if latest_order_row else {}
+        latest_order_items = latest_order_payload.get("items", []) if isinstance(latest_order_payload.get("items", []), list) else []
+        order_summary = (
+            order_summary_from_order_row(latest_order_row)
+            if latest_order_row
+            else order_summary_from_quote(latest_customer_quote(int(row["id"])) if row["status"] == "Ordered" else None, wishlist)
         )
         if wishlist:
             render_wishlist(
                 wishlist,
-                title="Ordered products" if row["status"] == "Ordered" else "Wishlist",
+                title="Saved cart" if row["status"] == "Ordered" else "Wishlist",
             )
+        render_customer_orders(int(row["id"]))
 
         if row["status"] == "Following":
             if row["on_hold"]:
@@ -4706,7 +4881,8 @@ def customer_card(row: sqlite3.Row) -> None:
             st.write(f"**Stage:** {row['followup_stage'] or 'Not set'}")
         elif row["status"] == "Ordered":
             render_order_summary(order_summary)
-            st.write(f"**Order date:** {display_date(row['order_date'])}")
+            display_order_date = latest_order_row["order_date"] if latest_order_row else row["order_date"]
+            st.write(f"**Order date:** {display_date(display_order_date)}")
             payment_schedule = render_payment_receipt(row, float(order_summary["total"]))
             render_payment_schedule_editor(row, float(order_summary["total"]))
             receipt_pdf = build_receipt_pdf(
@@ -4714,7 +4890,7 @@ def customer_card(row: sqlite3.Row) -> None:
                 order_summary,
                 float(payment_schedule["first_amount"]),
                 float(payment_schedule["second_amount"]),
-                wishlist,
+                latest_order_items or wishlist,
             )
             st.download_button(
                 "Download receipt PDF",
@@ -4724,9 +4900,9 @@ def customer_card(row: sqlite3.Row) -> None:
                 key=f"receipt-pdf-{row['id']}",
                 width="stretch",
             )
-            factory_items = production_required_items(wishlist)
+            factory_items = production_required_items(latest_order_items or wishlist)
             if factory_items:
-                factory_pdf = build_factory_production_pdf(row, factory_items, date_from_iso(row["order_date"], date.today()))
+                factory_pdf = build_factory_production_pdf(row, factory_items, date_from_iso(display_order_date, date.today()))
                 st.info("Some ordered products are not in stock. A factory production PDF is ready to send.")
                 st.download_button(
                     "Download factory production PDF",
@@ -6444,12 +6620,194 @@ def cart_page() -> None:
             save_customer_cart(st.session_state.active_customer_id)
             st.session_state.page = "Checkout"
             st.rerun()
+        if st.button("Check out selected items", width="stretch", disabled=not included_cart_items()):
+            st.session_state.checkout_order_adjustments = quote_adjustment_snapshot()
+            save_customer_cart(st.session_state.active_customer_id)
+            st.session_state.page = "OrderCheckout"
+            st.rerun()
         if st.session_state.active_customer_id and st.button("Save cart to this customer", width="stretch"):
             save_customer_cart(st.session_state.active_customer_id)
             st.success("Customer cart saved.")
         if st.button("Continue shopping", width="stretch"):
             st.session_state.page = "Catalog"
             st.rerun()
+
+
+def create_order_from_cart(
+    customer_id: int,
+    order_date_value: date,
+    first_payment_date: date,
+    first_payment_amount: float,
+    first_payment_paid: bool,
+    second_payment_enabled: bool,
+    second_payment_date: date,
+    second_payment_amount: float,
+    second_payment_paid: bool,
+    adjustments: dict[str, Any],
+) -> str:
+    selected_items = [dict(item) for item in included_cart_items()]
+    if not selected_items:
+        raise ValueError("No selected items to order")
+    selected_items, inventory_messages = deduct_inventory_for_order_items(selected_items)
+    selected_line_ids = {str(item.get("line_id") or "") for item in selected_items}
+    remaining_cart = [dict(item) for item in st.session_state.cart if str(item.get("line_id") or "") not in selected_line_ids]
+    customer = customer_by_id(customer_id)
+    now = datetime.now().isoformat(timespec="seconds")
+    order_no = order_number()
+    total = float(adjustments.get("total") or 0)
+    product_names = ", ".join(dict.fromkeys(str(item.get("name") or item.get("product_id") or "Product") for item in selected_items))
+    factory_items = production_required_items(selected_items)
+    install_followup_date = (order_date_value + timedelta(days=70)).isoformat() if factory_items else row_value(customer, "install_followup_date", "")
+    order = {
+        "order_number": order_no,
+        "created_at": now,
+        "order_date": order_date_value.isoformat(),
+        "customer_id": int(customer_id),
+        "customer_name": row_value(customer, "name", ""),
+        "salesperson": row_value(customer, "assigned_to") or default_customer_owner(),
+        "items": selected_items,
+        "subtotal": float(adjustments.get("subtotal") or 0),
+        "discount": float(adjustments.get("discount") or 0),
+        "discount_label": str(adjustments.get("discount_label") or "Discount"),
+        "tax": float(adjustments.get("tax") or 0),
+        "tax_rate": float(adjustments.get("tax_rate_percent") or 0),
+        "tax_enabled": bool(adjustments.get("tax_enabled", False)),
+        "installation_fee": float(adjustments.get("installation_fee") or 0),
+        "shipping_fee": float(adjustments.get("shipping_fee") or 0),
+        "shipping_enabled": bool(adjustments.get("shipping_enabled", False)),
+        "total": total,
+        "first_payment_date": first_payment_date.isoformat(),
+        "first_payment_amount": max(float(first_payment_amount), 0.0),
+        "first_payment_paid": bool(first_payment_paid),
+        "second_payment_enabled": bool(second_payment_enabled),
+        "second_payment_date": second_payment_date.isoformat() if second_payment_enabled else "",
+        "second_payment_amount": max(float(second_payment_amount), 0.0) if second_payment_enabled else 0.0,
+        "second_payment_paid": bool(second_payment_paid) if second_payment_enabled else False,
+    }
+    save_customer_order(customer_id, order)
+    updates = {
+        "status": "Ordered",
+        "updated_at": now,
+        "order_date": order_date_value.isoformat(),
+        "followup_stage": "Quoted",
+        "products_interest": product_names,
+        "budget": total,
+        "install_status": row_value(customer, "install_status") or "Not scheduled",
+        "install_followup_date": install_followup_date,
+        "first_payment_date": first_payment_date.isoformat(),
+        "first_payment_amount": max(float(first_payment_amount), 0.0),
+        "first_payment_paid": int(first_payment_paid),
+        "second_payment_enabled": int(second_payment_enabled),
+        "second_payment_date": second_payment_date.isoformat() if second_payment_enabled else "",
+        "second_payment_amount": max(float(second_payment_amount), 0.0) if second_payment_enabled else 0.0,
+        "second_payment_paid": int(second_payment_paid) if second_payment_enabled else 0,
+        "on_hold": 0,
+    }
+    if supabase_customers_enabled():
+        try:
+            supabase_update_customer(customer_id, updates)
+            mirror_customer_to_sqlite(customer_id, {**updates, "id": customer_id})
+        except Exception as exc:
+            st.error(f"Order could not be saved to Supabase customer record: {exc}")
+            st.stop()
+    else:
+        with db_connect() as conn:
+            assignments = ", ".join(f"{key} = ?" for key in updates)
+            conn.execute(f"UPDATE customers SET {assignments} WHERE id = ?", [*updates.values(), customer_id])
+    st.session_state.cart = remaining_cart
+    save_customer_cart(customer_id, remaining_cart)
+    add_customer_timeline_event(customer_id, order_date_value, "Order created", f"Order {order_no} created for {money(total)}. Products: {product_names}.")
+    if inventory_messages:
+        add_customer_timeline_event(customer_id, order_date_value, "Inventory updated", " ".join(inventory_messages))
+    if factory_items:
+        add_customer_timeline_event(customer_id, order_date_value, "Production required", f"{len(factory_items)} product line(s) need factory production. Installation reminder set for {display_date(install_followup_date)}.")
+    return order_no
+
+
+def order_checkout_page() -> None:
+    if not st.session_state.cart or not included_cart_items():
+        st.session_state.page = "Cart"
+        st.rerun()
+    st.markdown('<div class="quote-head"><div class="eyebrow" style="color:#b9c7bf">Checkout</div><h1 style="margin:5px 0;color:white">Create customer order</h1><p style="color:#c4d0c9;margin:0">Only included cart items will be ordered. Excluded items will stay in the customer cart.</p></div>', unsafe_allow_html=True)
+    adjustments = st.session_state.get("checkout_order_adjustments") or quote_adjustment_snapshot()
+    quote_items = included_cart_items()
+    customers = customer_rows()
+    customer_options = [int(row["id"]) for row in customers]
+    default_index = customer_options.index(st.session_state.active_customer_id) if st.session_state.active_customer_id in customer_options else 0
+    form_col, review_col = st.columns([1.3, 0.8], gap="large")
+    with form_col:
+        if not customer_options:
+            st.error("Please create a customer before checking out.")
+            return
+        with st.form("order-checkout-form"):
+            selected_customer_id = st.selectbox(
+                "Customer / 客户",
+                customer_options,
+                index=default_index,
+                format_func=lambda value: customer_display_name(value),
+            )
+            order_date_value = st.date_input("Order date", value=date.today())
+            total = float(adjustments.get("total") or 0)
+            product_total = max(float(adjustments.get("subtotal") or 0) - float(adjustments.get("discount") or 0), 0.0)
+            st.markdown("### Payment schedule / 付款方式")
+            pay_cols = st.columns(2)
+            with pay_cols[0]:
+                first_payment_date = st.date_input("First payment date", value=date.today())
+                first_payment_amount = st.number_input("First payment amount ($)", min_value=0.0, value=round(total, 2), step=100.0)
+                first_payment_paid = st.checkbox("First payment paid / 第一笔已付款", value=False)
+            with pay_cols[1]:
+                second_payment_enabled = st.checkbox("Use second payment / 需要第二笔付款", value=False)
+                if second_payment_enabled:
+                    second_payment_date = st.date_input("Second payment date", value=date.today())
+                    second_default = max(total - first_payment_amount, 0.0)
+                    second_payment_amount = st.number_input("Second payment amount ($)", min_value=0.0, value=round(second_default, 2), step=100.0)
+                    second_payment_paid = st.checkbox("Second payment paid / 第二笔已付款", value=False)
+                else:
+                    second_payment_date = date.today()
+                    second_payment_amount = 0.0
+                    second_payment_paid = False
+            paid_preview = (first_payment_amount if first_payment_paid else 0.0) + (second_payment_amount if second_payment_enabled and second_payment_paid else 0.0)
+            st.caption(f"Order total: {money(total)} · Product amount after discount: {money(product_total)} · Paid now: {money(paid_preview)} · Balance: {money(max(total - paid_preview, 0.0))}")
+            submitted = st.form_submit_button("Check out selected items", type="primary", width="stretch")
+            if submitted:
+                order_no = create_order_from_cart(
+                    int(selected_customer_id),
+                    order_date_value,
+                    first_payment_date,
+                    float(first_payment_amount),
+                    bool(first_payment_paid),
+                    bool(second_payment_enabled),
+                    second_payment_date,
+                    float(second_payment_amount),
+                    bool(second_payment_paid),
+                    adjustments,
+                )
+                set_active_customer(int(selected_customer_id), load_cart=False)
+                st.session_state.checkout_order_adjustments = None
+                st.success(f"Order {order_no} created. Ordered items were removed from the cart; remaining items stayed saved for this customer.")
+                st.session_state.page = "Cart"
+                st.rerun()
+        if st.button("Back to cart", width="stretch"):
+            st.session_state.page = "Cart"
+            st.rerun()
+    with review_col:
+        st.markdown("### Order review")
+        for item in quote_items:
+            color_label = item_color_label(item)
+            color_note = f" · {color_label}" if color_label else ""
+            area_sqft = float(item.get("area_sqft") or (float(item.get("width") or 0) * float(item.get("height") or 0) / 144))
+            st.markdown(f"**{item['name']} × {item['quantity']}**  \n{item['width']:.1f}\" × {item['height']:.1f}\" · {area_sqft:.2f} sq ft{color_note} · {money(item['line_total'])}")
+        st.divider()
+        st.markdown(f"**Subtotal:** {money(float(adjustments.get('subtotal') or 0))}")
+        if float(adjustments.get("discount") or 0):
+            st.markdown(f"**Discount:** -{money(float(adjustments.get('discount') or 0))}")
+        if float(adjustments.get("tax") or 0):
+            st.markdown(f"**Tax:** {money(float(adjustments.get('tax') or 0))}")
+        if float(adjustments.get("shipping_fee") or 0):
+            st.markdown(f"**Shipping:** {money(float(adjustments.get('shipping_fee') or 0))}")
+        if float(adjustments.get("installation_fee") or 0):
+            st.markdown(f"**Installation:** {money(float(adjustments.get('installation_fee') or 0))}")
+        st.markdown(f"### Total {money(float(adjustments.get('total') or 0))}")
 
 
 def quote_number() -> str:
@@ -7450,6 +7808,8 @@ def main() -> None:
         cart_page()
     elif st.session_state.page == "Checkout":
         checkout_page()
+    elif st.session_state.page == "OrderCheckout":
+        order_checkout_page()
     elif st.session_state.page == "Quotes":
         st.session_state.page = "Catalog"
         st.rerun()
