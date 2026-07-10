@@ -6544,7 +6544,8 @@ def build_quote_pdf(quote: dict[str, Any]) -> bytes:
     info.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP"), ("BOTTOMPADDING", (0, 0), (-1, -1), 18)]))
     story.append(info)
     data = [[Paragraph("<b>IMAGE</b>", styles["Tiny"]), Paragraph("<b>PRODUCT / CONFIGURATION</b>", styles["Tiny"]), Paragraph("<b>QTY</b>", styles["Tiny"]), Paragraph("<b>UNIT</b>", styles["Tiny"]), Paragraph("<b>AMOUNT</b>", styles["Tiny"])]]
-    for item in quote["items"]:
+    pdf_items = [item for item in quote.get("items", []) if cart_item_included(item)]
+    for item in pdf_items:
         description = (
             f"<b>{pdf_text(item.get('name'))}</b><br/>"
             f"{float(item.get('width') or 0):.1f}\" W x {float(item.get('height') or 0):.1f}\" H | {pdf_text(item.get('direction'))}<br/>"
