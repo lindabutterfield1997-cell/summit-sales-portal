@@ -3038,67 +3038,67 @@ def wishlist_product_ids(wishlist: list[dict[str, Any]]) -> list[str]:
     ]
 
 
-def wishlist_item_to_cart_item(item: dict[str, Any]) -> dict[str, Any]:
-    product_id = str(item.get("product_id") or "")
-    product = get_product_or_none(product_id) if product_id else None
-    width = float(item.get("width") or 72.0)
-    height = float(item.get("height") or 96.0)
-    quantity = int(item.get("quantity") or 1)
-    direction = str(item.get("direction") or (product.directions[0] if product and product.directions else ""))
-    glass = str(item.get("glass") or (product.glass_colors[0] if product and product.glass_colors else ""))
-    frame = str(item.get("frame") or (product.frame_colors[0] if product and product.frame_colors else ""))
-    color = str(item.get("color") or "")
-    calculated_unit = float(item.get("original_unit_price") or item.get("unit_price") or 0.0)
-    area_sqft = width * height / 144
-    base_rate = float(item.get("base_rate") or (product.base_rate if product else 0.0) or 0.0)
-    sales_base_rate = float(item.get("sales_base_rate") or base_rate or 0.0)
+def option_tuple_with_current(options: Sequence[str], current: str | None) -> tuple[str, ...]:
+    values = tuple(str(option) for option in options if str(option).strip())
+    current_value = str(current or "").strip()
+    if current_value and current_value not in values:
+        return (*values, current_value)
+    return values or (current_value or "",)
+
+
+def updated_wishlist_item(
+    item: dict[str, Any],
+    product: Product | None,
+    *,
+    width: float,
+    height: float,
+    quantity: int,
+    direction: str,
+    glass: str,
+    frame: str,
+    color: str,
+    unit_price: float,
+    notes: str,
+) -> dict[str, Any]:
+    updated = dict(item)
+    product_id = str(updated.get("product_id") or (product.id if product else ""))
+    calculated_unit = float(updated.get("original_unit_price") or updated.get("unit_price") or unit_price or 0.0)
+    area_sqft = float(width) * float(height) / 144
+    base_rate = float(updated.get("base_rate") or (product.base_rate if product else 0.0) or 0.0)
+    sales_base_rate = float(updated.get("sales_base_rate") or base_rate or 0.0)
     if product:
-        calculated_unit, breakdown = price_product(product, width, height, glass, frame)
+        calculated_unit, breakdown = price_product(product, float(width), float(height), glass, frame)
         area_sqft = float(breakdown.get("area_sqft") or area_sqft)
-    unit_price = float(item.get("unit_price") or calculated_unit or 0.0)
-    return {
-        "line_id": hashlib.sha1(f"wishlist-{product_id}-{datetime.now().isoformat()}".encode()).hexdigest()[:10],
-        "product_id": product_id,
-        "name": str(item.get("name") or (product.name if product else "Product")),
-        "category": str(item.get("category") or (product.category if product else "")),
-        "direction": direction,
-        "glass": glass,
-        "frame": frame,
-        "color": color,
-        "width": width,
-        "height": height,
-        "quantity": quantity,
-        "area_sqft": area_sqft,
-        "base_rate": base_rate,
-        "sales_base_rate": sales_base_rate,
-        "original_unit_price": calculated_unit,
-        "unit_price": unit_price,
-        "line_total": unit_price * quantity,
-        "price_adjusted": abs(unit_price - calculated_unit) > 0.005,
-        "price_adjustment_mode": "unit" if abs(unit_price - calculated_unit) > 0.005 else "",
-        "notes": str(item.get("notes") or ""),
-    }
+    unit_price = float(unit_price)
+    quantity = int(quantity)
+    updated.update(
+        {
+            "source": updated.get("source") or "cart",
+            "product_id": product_id,
+            "name": str(updated.get("name") or (product.name if product else "Product")),
+            "category": str(updated.get("category") or (product.category if product else "")),
+            "direction": direction,
+            "glass": glass,
+            "frame": frame,
+            "color": color,
+            "width": float(width),
+            "height": float(height),
+            "quantity": quantity,
+            "area_sqft": area_sqft,
+            "base_rate": base_rate,
+            "sales_base_rate": sales_base_rate,
+            "original_unit_price": calculated_unit,
+            "unit_price": unit_price,
+            "line_total": unit_price * quantity,
+            "price_adjusted": abs(unit_price - calculated_unit) > 0.005,
+            "price_adjustment_mode": "unit" if abs(unit_price - calculated_unit) > 0.005 else "",
+            "notes": notes,
+        }
+    )
+    return updated
 
 
-def add_wishlist_item_to_cart(customer_id: int, item: dict[str, Any]) -> str:
-    set_active_customer(customer_id, load_cart=True)
-    cart_item = wishlist_item_to_cart_item(item)
-    item_key = cart_merge_key(cart_item)
-    merged = add_or_merge_cart_item(cart_item)
-    target_line_id = str(cart_item["line_id"])
-    if merged:
-        for existing in st.session_state.cart:
-            normalize_cart_item(existing)
-            if cart_merge_key(existing) == item_key:
-                target_line_id = str(existing.get("line_id") or target_line_id)
-                break
-    save_customer_cart(customer_id)
-    st.session_state.page = "Cart"
-    st.session_state[f"cart-edit-{target_line_id}"] = True
-    return target_line_id
-
-
-def render_wishlist(wishlist: list[dict[str, Any]], selection_key: str = "", title: str = "Wishlist", cart_customer_id: int | None = None) -> list[int]:
+def render_wishlist(wishlist: list[dict[str, Any]], selection_key: str = "", title: str = "Wishlist", editable_customer_id: int | None = None) -> list[int]:
     if not wishlist:
         st.caption("No wishlist saved yet.")
         return []
@@ -3130,12 +3130,13 @@ def render_wishlist(wishlist: list[dict[str, Any]], selection_key: str = "", tit
             line += f"  \nEstimated: **{money(amount)}**"
 
         with st.container(border=True):
-            if selection_key and cart_customer_id:
+            can_edit = editable_customer_id is not None
+            if selection_key and can_edit:
                 image_col, info_col, edit_col, select_col = st.columns([0.55, 3.0, 0.9, 0.8], vertical_alignment="top")
             elif selection_key:
                 image_col, info_col, select_col = st.columns([0.55, 3.45, 0.8], vertical_alignment="top")
                 edit_col = None
-            elif cart_customer_id:
+            elif can_edit:
                 image_col, info_col, edit_col = st.columns([0.55, 3.45, 1.0], vertical_alignment="top")
                 select_col = None
             else:
@@ -3157,11 +3158,65 @@ def render_wishlist(wishlist: list[dict[str, Any]], selection_key: str = "", tit
                     st.markdown(f"<span style='color:{stock_color};font-weight:700'>{stock_label}</span>", unsafe_allow_html=True)
                 if item.get("notes"):
                     st.caption(str(item["notes"]))
+            edit_state_key = f"wishlist-edit-open-{editable_customer_id}-{index - 1}"
             if edit_col is not None:
                 with edit_col:
-                    if st.button("Edit in cart", key=f"wishlist-edit-cart-{cart_customer_id}-{index - 1}", width="stretch"):
-                        add_wishlist_item_to_cart(int(cart_customer_id), item)
-                        st.toast(f"{name} added to cart for editing.")
+                    edit_label = "Close" if st.session_state.get(edit_state_key, False) else "Edit"
+                    if st.button(edit_label, key=f"wishlist-edit-toggle-{editable_customer_id}-{index - 1}", width="stretch"):
+                        st.session_state[edit_state_key] = not st.session_state.get(edit_state_key, False)
+                        st.rerun()
+            if st.session_state.get(edit_state_key, False) and editable_customer_id is not None:
+                product = get_product_or_none(product_id) if product_id else None
+                direction_options = option_tuple_with_current(product.directions if product else (), item.get("direction"))
+                glass_options = option_tuple_with_current(product.glass_colors if product else (), item.get("glass"))
+                frame_options = option_tuple_with_current(product.frame_colors if product else (), item.get("frame"))
+                color_options = option_tuple_with_current((product.color_options or product.frame_colors) if product else (), item.get("color"))
+                with st.form(f"wishlist-edit-form-{editable_customer_id}-{index - 1}"):
+                    edit_cols = st.columns(3)
+                    with edit_cols[0]:
+                        new_width = st.number_input("Width (inches)", min_value=12.0, max_value=360.0, value=float(item.get("width") or 72.0), step=0.5, key=f"wishlist-width-{editable_customer_id}-{index - 1}")
+                    with edit_cols[1]:
+                        new_height = st.number_input("Height (inches)", min_value=12.0, max_value=240.0, value=float(item.get("height") or 96.0), step=0.5, key=f"wishlist-height-{editable_customer_id}-{index - 1}")
+                    with edit_cols[2]:
+                        new_quantity = st.number_input("Qty", min_value=1, max_value=99, value=int(item.get("quantity") or 1), step=1, key=f"wishlist-qty-{editable_customer_id}-{index - 1}")
+                    option_cols = st.columns(4)
+                    with option_cols[0]:
+                        new_direction = st.selectbox("Opening / handing", direction_options, index=option_index(direction_options, str(item.get("direction") or "")), key=f"wishlist-direction-{editable_customer_id}-{index - 1}")
+                    with option_cols[1]:
+                        new_glass = st.selectbox("Glass", glass_options, index=option_index(glass_options, str(item.get("glass") or "")), key=f"wishlist-glass-{editable_customer_id}-{index - 1}")
+                    with option_cols[2]:
+                        new_frame = st.selectbox("Frame / finish", frame_options, index=option_index(frame_options, str(item.get("frame") or "")), key=f"wishlist-frame-{editable_customer_id}-{index - 1}")
+                    with option_cols[3]:
+                        new_color = st.selectbox("Color", color_options, index=option_index(color_options, str(item.get("color") or "")), key=f"wishlist-color-{editable_customer_id}-{index - 1}")
+                    price_cols = st.columns([1, 2])
+                    with price_cols[0]:
+                        new_unit_price = st.number_input("Unit price", min_value=0.0, value=float(item.get("unit_price") or item.get("line_total") or 0.0) / max(int(item.get("quantity") or 1), 1), step=10.0, key=f"wishlist-unit-price-{editable_customer_id}-{index - 1}")
+                    with price_cols[1]:
+                        new_notes = st.text_input("Item notes", value=str(item.get("notes") or ""), key=f"wishlist-notes-{editable_customer_id}-{index - 1}")
+                    save_col, cancel_col = st.columns([1, 1])
+                    save_edit = save_col.form_submit_button("Save wishlist item", type="primary", width="stretch")
+                    cancel_edit = cancel_col.form_submit_button("Cancel", width="stretch")
+                    if save_edit:
+                        updated_wishlist = [dict(entry) for entry in wishlist]
+                        updated_wishlist[index - 1] = updated_wishlist_item(
+                            item,
+                            product,
+                            width=float(new_width),
+                            height=float(new_height),
+                            quantity=int(new_quantity),
+                            direction=str(new_direction),
+                            glass=str(new_glass),
+                            frame=str(new_frame),
+                            color=str(new_color),
+                            unit_price=float(new_unit_price),
+                            notes=str(new_notes),
+                        )
+                        save_customer_wishlist(int(editable_customer_id), updated_wishlist)
+                        st.session_state[edit_state_key] = False
+                        st.success("Wishlist item updated.")
+                        st.rerun()
+                    if cancel_edit:
+                        st.session_state[edit_state_key] = False
                         st.rerun()
             if select_col is not None:
                 with select_col:
@@ -4567,7 +4622,7 @@ def customer_card(row: sqlite3.Row) -> None:
                 wishlist,
                 selection_key=f"ordered-wishlist-item-{row['id']}" if row["status"] != "Ordered" else "",
                 title="Ordered products" if row["status"] == "Ordered" else "Wishlist",
-                cart_customer_id=int(row["id"]),
+                editable_customer_id=int(row["id"]) if row["status"] != "Ordered" else None,
             )
             if row["status"] != "Ordered":
                 if st.button(
