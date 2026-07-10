@@ -3109,27 +3109,13 @@ def get_product_or_none(product_id: str) -> Product | None:
 
 def price_product_with_rate(product: Product, width_in: float, height_in: float, glass: str, frame: str, base_rate: float) -> tuple[float, dict[str, float]]:
     area_sqft = width_in * height_in / 144
-    glass_factor = {
-        "Low-E": 1.12,
-        "Grey": 1.06,
-        "Bronze": 1.07,
-        "Frosted": 1.10,
-        "No glass": 0.92,
-    }.get(glass, 1.0)
-    frame_factor = {
-        "Bronze": 1.04,
-        "Charcoal": 1.03,
-        "Walnut": 1.12,
-        "Mahogany": 1.16,
-        "Oak": 1.08,
-    }.get(frame, 1.0)
-    calculated = area_sqft * float(base_rate) * glass_factor * frame_factor
+    calculated = area_sqft * float(base_rate)
     unit_price = max(calculated, product.minimum_price)
     return unit_price, {
         "area_sqft": area_sqft,
         "base_rate": float(base_rate),
-        "glass_factor": glass_factor,
-        "frame_factor": frame_factor,
+        "glass_factor": 1.0,
+        "frame_factor": 1.0,
         "calculated": calculated,
     }
 
