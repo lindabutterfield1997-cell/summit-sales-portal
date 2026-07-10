@@ -4820,6 +4820,25 @@ def finance_page() -> None:
                     unsafe_allow_html=True,
                 )
 
+            st.markdown("#### Order details in this period")
+            period_detail_rows = [
+                {
+                    "Customer": record["customer"],
+                    "Salesperson": record["sales"],
+                    "Order date": display_date(record["order_date"]),
+                    "Order total": money(float(record["order_total"])),
+                    "Collected in period": money(payment_amount_in_period(record, start, end)),
+                    "Paid total": money(float(record["paid_total"])),
+                    "Open balance": money(float(record["balance"])),
+                    "Customer ID": record["customer_id"],
+                }
+                for record in sorted(period_orders, key=lambda item: (item["order_date"] or "", item["customer"]), reverse=True)
+            ]
+            if period_detail_rows:
+                st.dataframe(period_detail_rows, hide_index=True, width="stretch")
+            else:
+                st.markdown('<div class="empty">No order detail rows for this period.</div>', unsafe_allow_html=True)
+
     with second_tab:
         forecast_rows = [
             {
