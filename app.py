@@ -4046,6 +4046,66 @@ def customer_city_label(row: sqlite3.Row | dict[str, Any]) -> str:
     return ""
 
 
+
+def create_quote_from_wishlist(customer: sqlite3.Row | dict[str, Any], wishlist: list[dict[str, Any]]) -> tuple[dict[str, Any], bytes]:
+    """Create and save a quote directly from a customer's wishlist."""
+    customer_id = int(row_value(customer, "id") or 0)
+    quote_items = [dict(item) for item in wishlist]
+    subtotal = wishlist_total(quote_items)
+    now = datetime.now()
+    customer_payload = {
+        "name": str(row_value(customer, "name", "")).strip(),
+        "company": str(row_value(customer, "company", "")).strip(),
+        "email": str(row_value(customer, "email", "")).strip(),
+        "phone": format_us_phone(str(row_value(customer, "phone", "")).strip()),
+        "address": str(row_value(customer, "address", "")).strip(),
+    }
+    quote = {
+        "quote_number": quote_number(),
+        "created_at": now.strftime("%B %d, %Y"),
+        "valid_until": datetime.fromtimestamp(now.timestamp() + 30 * 86400).strftime("%B %d, %Y"),
+        "customer": customer_payload,
+        "items": quote_items,
+        "subtotal": subtotal,
+        "discount": 0.0,
+        "discount_label": "Discount",
+        "tax_enabled": False,
+        "tax_rate": 0.0,
+        "installation_fee": 0.0,
+        "shipping_fee": 0.0,
+        "shipping_enabled": False,
+        "tax": 0.0,
+        "total": subtotal,
+        "project_notes": "",
+        "customer_id": customer_id,
+    }
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    pdf = build_quote_pdf(quote)
+    (OUTPUT_DIR / f"{quote['quote_number']}.pdf").write_bytes(pdf)
+    save_quote(quote)
+
+    product_names = ", ".join(
+        dict.fromkeys(str(item.get("name") or item.get("product_id") or "Product") for item in quote_items)
+    )
+    note = f"Quote {quote['quote_number']} created from wishlist for {money(subtotal)}."
+    existing_notes = str(row_value(customer, "notes", "") or "")
+    updated_notes = existing_notes if note in existing_notes else f"{existing_notes}\n{note}".strip()
+    if customer_id:
+        save_customer(
+            customer_id,
+            {
+                "status": "Ordered" if row_value(customer, "status") == "Ordered" else "Following",
+                "followup_stage": "Quoted",
+                "budget": subtotal,
+                "products_interest": product_names,
+                "assigned_to": row_value(customer, "assigned_to") or default_customer_owner(),
+                "notes": updated_notes,
+                "wishlist": json.dumps(wishlist, ensure_ascii=False),
+            },
+        )
+        add_customer_timeline_event(customer_id, date.today(), "Quote created from wishlist", note, quote["quote_number"])
+    return quote, pdf
+
 def customer_title_detail(row: sqlite3.Row) -> str:
     if row["status"] == "Following":
         return row["followup_stage"] or "New lead"
@@ -4670,16 +4730,40 @@ def customer_card(row: sqlite3.Row) -> None:
                 editable_customer_id=int(row["id"]) if row["status"] != "Ordered" else None,
             )
             if row["status"] != "Ordered":
-                if st.button(
-                    "Mark selected products as ordered",
-                    key=f"mark-wishlist-ordered-{row['id']}",
-                    type="primary",
-                    disabled=not selected_wishlist_indexes,
-                    width="stretch",
-                ):
-                    mark_wishlist_items_ordered(int(row["id"]), wishlist, selected_wishlist_indexes)
-                    st.success("Selected wishlist products were marked as ordered.")
-                    st.rerun()
+                quote_state_key = f"wishlist-quote-ready-{row['id']}"
+                quote_col, order_col = st.columns(2)
+                with quote_col:
+                    if st.button(
+                        "Create quote from wishlist",
+                        key=f"quote-wishlist-{row['id']}",
+                        type="secondary",
+                        width="stretch",
+                    ):
+                        quote, pdf = create_quote_from_wishlist(row, wishlist)
+                        st.session_state[quote_state_key] = {"quote_number": quote["quote_number"], "pdf": pdf}
+                        st.session_state.last_quote = {"data": quote, "pdf": pdf}
+                        st.success(f"Quote {quote['quote_number']} created from wishlist.")
+                with order_col:
+                    if st.button(
+                        "Mark selected products as ordered",
+                        key=f"mark-wishlist-ordered-{row['id']}",
+                        type="primary",
+                        disabled=not selected_wishlist_indexes,
+                        width="stretch",
+                    ):
+                        mark_wishlist_items_ordered(int(row["id"]), wishlist, selected_wishlist_indexes)
+                        st.success("Selected wishlist products were marked as ordered.")
+                        st.rerun()
+                ready_quote = st.session_state.get(quote_state_key)
+                if ready_quote:
+                    st.download_button(
+                        "Download wishlist quote PDF",
+                        data=ready_quote["pdf"],
+                        file_name=f"{ready_quote['quote_number']}.pdf",
+                        mime="application/pdf",
+                        key=f"download-wishlist-quote-{row['id']}-{ready_quote['quote_number']}",
+                        width="stretch",
+                    )
 
         if row["status"] == "Following":
             if row["on_hold"]:
