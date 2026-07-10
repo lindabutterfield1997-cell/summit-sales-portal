@@ -3040,7 +3040,8 @@
       "Black",
       "White",
       "Charcoal",
-      "Bronze"
+      "Bronze",
+      "Anodized"
     ],
     "accent": "#5f6865",
     "hero_image": "uploads/sw-630-horizontal-aluminum-sliding-window.webp",
@@ -3048,12 +3049,13 @@
       "uploads/sw-630-horizontal-aluminum-sliding-window.webp"
     ],
     "active": true,
-    "updated_at": "2026-07-03T20:51",
+    "updated_at": "2026-07-09T16:53:00",
     "color_options": [
       "Black",
       "White",
       "Charcoal",
-      "Bronze"
+      "Bronze",
+      "Anodized"
     ],
     "color_information": "",
     "stock_information": ""
