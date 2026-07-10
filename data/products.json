@@ -2468,6 +2468,47 @@
     "stock_information": ""
   },
   {
+    "id": "BW-760-FOLDUP",
+    "section": "Windows",
+    "category": "Bifold Window",
+    "name": "Aluminum Fold-Up Bifold Window",
+    "subtitle": "Fold-up aluminum window system",
+    "description": "Aluminum fold-up bifold window with a black frame, wide opening presentation, and large glass panels for ventilation and pass-through use.",
+    "base_rate": 148.0,
+    "minimum_price": 1700.0,
+    "directions": [
+      "Fold up",
+      "Fold down"
+    ],
+    "glass_colors": [
+      "Clear",
+      "Low-E",
+      "Grey",
+      "Bronze"
+    ],
+    "frame_colors": [
+      "Black",
+      "White",
+      "Charcoal",
+      "Bronze"
+    ],
+    "accent": "#4f5b58",
+    "hero_image": "uploads/bw-760-fold-up-bifold-window-3x2.webp",
+    "detail_images": [
+      "uploads/bw-760-fold-up-bifold-window-3x2.webp"
+    ],
+    "active": true,
+    "updated_at": "2026-07-10T00:00:00",
+    "color_options": [
+      "Black",
+      "White",
+      "Charcoal",
+      "Bronze"
+    ],
+    "color_information": "",
+    "stock_information": ""
+  },
+  {
     "id": "BW-220",
     "section": "Windows",
     "category": "Bifold Window",
