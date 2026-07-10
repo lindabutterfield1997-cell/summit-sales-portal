@@ -2331,15 +2331,26 @@ def customer_picker_label(row: sqlite3.Row, query: str = "") -> str:
 def save_customer_cart(customer_id: int | None, cart: list[dict[str, Any]] | None = None) -> None:
     if not customer_id:
         return
-    payload = json.dumps(cart if cart is not None else st.session_state.cart, ensure_ascii=False)
+    cart_payload = cart if cart is not None else st.session_state.cart
+    payload = json.dumps(cart_payload, ensure_ascii=False)
+    now = datetime.now().isoformat(timespec="seconds")
     with db_connect() as conn:
         conn.execute(
             """
             INSERT OR REPLACE INTO customer_carts (customer_id, updated_at, payload)
             VALUES (?, ?, ?)
             """,
-            (customer_id, datetime.now().isoformat(timespec="seconds"), payload),
+            (customer_id, now, payload),
         )
+        conn.execute(
+            "UPDATE customers SET wishlist = ?, updated_at = ? WHERE id = ?",
+            (payload, now, int(customer_id)),
+        )
+    if supabase_customers_enabled():
+        try:
+            supabase_update_customer(int(customer_id), {"wishlist": cart_payload, "updated_at": now})
+        except Exception as exc:
+            warn_supabase_fallback(f"Supabase cart sync failed, saving cart locally for now. {exc}")
 
 
 def save_customer_wishlist(customer_id: int | None, wishlist: list[dict[str, Any]] | None = None) -> None:
@@ -2366,10 +2377,12 @@ def load_customer_cart(customer_id: int | None) -> list[dict[str, Any]]:
         return []
     with db_connect() as conn:
         row = conn.execute("SELECT payload FROM customer_carts WHERE customer_id = ?", (customer_id,)).fetchone()
-    if not row:
-        return []
+    raw_payload = row[0] if row else None
+    if not raw_payload:
+        customer = customer_by_id(int(customer_id))
+        raw_payload = row_value(customer, "wishlist") if customer else None
     try:
-        data = json.loads(row[0])
+        data = json.loads(raw_payload) if raw_payload else []
     except (TypeError, ValueError):
         return []
     if not isinstance(data, list):
@@ -3486,18 +3499,41 @@ def sync_cart_item_price(item: dict[str, Any], unit_price: float) -> None:
     item["price_adjustment_mode"] = "unit" if item["price_adjusted"] else ""
 
 
-def update_cart_item_configuration(item: dict[str, Any], product: Product, width: float, height: float, quantity: int) -> bool:
+def update_cart_item_configuration(
+    item: dict[str, Any],
+    product: Product,
+    width: float,
+    height: float,
+    quantity: int,
+    direction: str | None = None,
+    glass: str | None = None,
+    frame: str | None = None,
+    color: str | None = None,
+    notes: str | None = None,
+) -> bool:
     width = float(width)
     height = float(height)
     quantity = int(quantity)
-    current_width = float(item.get("width") or 0.0)
-    current_height = float(item.get("height") or 0.0)
-    current_quantity = int(item.get("quantity") or 1)
-    if abs(current_width - width) < 0.001 and abs(current_height - height) < 0.001 and current_quantity == quantity:
+    direction = str(direction if direction is not None else item.get("direction") or (product.directions[0] if product.directions else ""))
+    glass = str(glass if glass is not None else item.get("glass") or (product.glass_colors[0] if product.glass_colors else ""))
+    frame = str(frame if frame is not None else item.get("frame") or (product.frame_colors[0] if product.frame_colors else ""))
+    color = str(color if color is not None else item.get("color") or ((product.color_options or product.frame_colors)[0] if (product.color_options or product.frame_colors) else ""))
+    notes = str(notes if notes is not None else item.get("notes") or "")
+
+    current_values = (
+        round(float(item.get("width") or 0.0), 3),
+        round(float(item.get("height") or 0.0), 3),
+        int(item.get("quantity") or 1),
+        str(item.get("direction") or ""),
+        str(item.get("glass") or ""),
+        str(item.get("frame") or ""),
+        str(item.get("color") or ""),
+        str(item.get("notes") or ""),
+    )
+    new_values = (round(width, 3), round(height, 3), quantity, direction, glass, frame, color, notes)
+    if current_values == new_values:
         return False
 
-    glass = str(item.get("glass") or (product.glass_colors[0] if product.glass_colors else ""))
-    frame = str(item.get("frame") or (product.frame_colors[0] if product.frame_colors else ""))
     calculated_unit, breakdown = price_product(product, width, height, glass, frame)
     sales_base_rate = float(item.get("sales_base_rate", product.base_rate) or product.base_rate)
     sales_unit_from_rate, sales_breakdown = price_product_with_rate(product, width, height, glass, frame, sales_base_rate)
@@ -3505,6 +3541,10 @@ def update_cart_item_configuration(item: dict[str, Any], product: Product, width
     adjustment_mode = str(item.get("price_adjustment_mode") or "")
     was_unit_adjusted = bool(item.get("price_adjusted")) and adjustment_mode != "rate"
 
+    item["direction"] = direction
+    item["glass"] = glass
+    item["frame"] = frame
+    item["color"] = color
     item["width"] = width
     item["height"] = height
     item["quantity"] = quantity
@@ -3512,6 +3552,7 @@ def update_cart_item_configuration(item: dict[str, Any], product: Product, width
     item["base_rate"] = product.base_rate
     item["sales_base_rate"] = sales_base_rate
     item["original_unit_price"] = calculated_unit
+    item["notes"] = notes
     if adjustment_mode == "rate":
         item["unit_price"] = sales_unit_from_rate
         item["price_adjusted"] = abs(sales_base_rate - float(product.base_rate)) > 0.005
@@ -4047,65 +4088,6 @@ def customer_city_label(row: sqlite3.Row | dict[str, Any]) -> str:
 
 
 
-def create_quote_from_wishlist(customer: sqlite3.Row | dict[str, Any], wishlist: list[dict[str, Any]]) -> tuple[dict[str, Any], bytes]:
-    """Create and save a quote directly from a customer's wishlist."""
-    customer_id = int(row_value(customer, "id") or 0)
-    quote_items = [dict(item) for item in wishlist]
-    subtotal = wishlist_total(quote_items)
-    now = datetime.now()
-    customer_payload = {
-        "name": str(row_value(customer, "name", "")).strip(),
-        "company": str(row_value(customer, "company", "")).strip(),
-        "email": str(row_value(customer, "email", "")).strip(),
-        "phone": format_us_phone(str(row_value(customer, "phone", "")).strip()),
-        "address": str(row_value(customer, "address", "")).strip(),
-    }
-    quote = {
-        "quote_number": quote_number(),
-        "created_at": now.strftime("%B %d, %Y"),
-        "valid_until": datetime.fromtimestamp(now.timestamp() + 30 * 86400).strftime("%B %d, %Y"),
-        "customer": customer_payload,
-        "items": quote_items,
-        "subtotal": subtotal,
-        "discount": 0.0,
-        "discount_label": "Discount",
-        "tax_enabled": False,
-        "tax_rate": 0.0,
-        "installation_fee": 0.0,
-        "shipping_fee": 0.0,
-        "shipping_enabled": False,
-        "tax": 0.0,
-        "total": subtotal,
-        "project_notes": "",
-        "customer_id": customer_id,
-    }
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    pdf = build_quote_pdf(quote)
-    (OUTPUT_DIR / f"{quote['quote_number']}.pdf").write_bytes(pdf)
-    save_quote(quote)
-
-    product_names = ", ".join(
-        dict.fromkeys(str(item.get("name") or item.get("product_id") or "Product") for item in quote_items)
-    )
-    note = f"Quote {quote['quote_number']} created from wishlist for {money(subtotal)}."
-    existing_notes = str(row_value(customer, "notes", "") or "")
-    updated_notes = existing_notes if note in existing_notes else f"{existing_notes}\n{note}".strip()
-    if customer_id:
-        save_customer(
-            customer_id,
-            {
-                "status": "Ordered" if row_value(customer, "status") == "Ordered" else "Following",
-                "followup_stage": "Quoted",
-                "budget": subtotal,
-                "products_interest": product_names,
-                "assigned_to": row_value(customer, "assigned_to") or default_customer_owner(),
-                "notes": updated_notes,
-                "wishlist": json.dumps(wishlist, ensure_ascii=False),
-            },
-        )
-        add_customer_timeline_event(customer_id, date.today(), "Quote created from wishlist", note, quote["quote_number"])
-    return quote, pdf
-
 def customer_title_detail(row: sqlite3.Row) -> str:
     if row["status"] == "Following":
         return row["followup_stage"] or "New lead"
@@ -4285,31 +4267,13 @@ def customer_editor(existing: sqlite3.Row | None = None, form_key: str = "custom
         showroom_note = row_value(existing, "showroom_note")
         answer_status = row_value(existing, "answer_status")
         answer_status_note = row_value(existing, "answer_status_note")
-        st.markdown("#### Wishlist")
+        st.markdown("#### Customer cart / Wishlist")
         existing_wishlist = parse_wishlist(existing["wishlist"] if is_edit else None)
-        drafted_wishlist = st.session_state.get("wishlist_draft", [])
         use_cart_wishlist = False
-        if st.session_state.cart:
-            use_cart_wishlist = st.checkbox(
-                f"Use current cart as wishlist ({len(st.session_state.cart)} item(s))",
-                value=not existing_wishlist,
-            )
-            st.caption("This saves the exact cart configuration: dimensions, glass, frame, quantity and estimated amount.")
-        elif drafted_wishlist:
-            use_cart_wishlist = st.checkbox(
-                f"Use saved cart draft as wishlist ({len(drafted_wishlist)} item(s))",
-                value=not existing_wishlist,
-            )
-            st.caption("This draft came from the cart and will be attached to this customer when saved.")
-        product_options = [product.id for product in PRODUCTS if product.active]
-        selected_products = st.multiselect(
-            "Or choose products manually",
-            product_options,
-            default=[product_id for product_id in wishlist_product_ids(existing_wishlist) if product_id in product_options],
-            format_func=lambda product_id: f"{get_product(product_id).name} · {product_id}",
-        )
-        if existing_wishlist and not use_cart_wishlist:
-            st.caption(f"Existing wishlist: {len(existing_wishlist)} item(s). Manual product choices replace simple product wishlist entries when saved.")
+        selected_products: list[str] = []
+        st.caption("Wishlist is now a read-only view of this customer's saved cart. To change products, open the customer's cart and edit there.")
+        if existing_wishlist:
+            st.caption(f"Saved cart / wishlist: {len(existing_wishlist)} item(s).")
 
         if status == "Following":
             st.markdown("#### Follow-up")
@@ -4396,11 +4360,7 @@ def customer_editor(existing: sqlite3.Row | None = None, form_key: str = "custom
             if not name.strip():
                 st.error("Customer name is required.")
                 return
-            if use_cart_wishlist and st.session_state.cart:
-                wishlist_to_save = append_wishlist_items(existing_wishlist, wishlist_from_cart()) if is_edit else wishlist_from_cart()
-            elif use_cart_wishlist and drafted_wishlist:
-                wishlist_to_save = append_wishlist_items(existing_wishlist, drafted_wishlist) if is_edit else drafted_wishlist
-            elif selected_products and not (is_edit and existing["status"] == "Ordered"):
+            if selected_products and not (is_edit and existing["status"] == "Ordered"):
                 wishlist_to_save = wishlist_from_products(selected_products)
             else:
                 wishlist_to_save = existing_wishlist
@@ -4723,47 +4683,10 @@ def customer_card(row: sqlite3.Row) -> None:
             wishlist,
         )
         if wishlist:
-            selected_wishlist_indexes = render_wishlist(
+            render_wishlist(
                 wishlist,
-                selection_key=f"ordered-wishlist-item-{row['id']}" if row["status"] != "Ordered" else "",
                 title="Ordered products" if row["status"] == "Ordered" else "Wishlist",
-                editable_customer_id=int(row["id"]) if row["status"] != "Ordered" else None,
             )
-            if row["status"] != "Ordered":
-                quote_state_key = f"wishlist-quote-ready-{row['id']}"
-                quote_col, order_col = st.columns(2)
-                with quote_col:
-                    if st.button(
-                        "Create quote from wishlist",
-                        key=f"quote-wishlist-{row['id']}",
-                        type="secondary",
-                        width="stretch",
-                    ):
-                        quote, pdf = create_quote_from_wishlist(row, wishlist)
-                        st.session_state[quote_state_key] = {"quote_number": quote["quote_number"], "pdf": pdf}
-                        st.session_state.last_quote = {"data": quote, "pdf": pdf}
-                        st.success(f"Quote {quote['quote_number']} created from wishlist.")
-                with order_col:
-                    if st.button(
-                        "Mark selected products as ordered",
-                        key=f"mark-wishlist-ordered-{row['id']}",
-                        type="primary",
-                        disabled=not selected_wishlist_indexes,
-                        width="stretch",
-                    ):
-                        mark_wishlist_items_ordered(int(row["id"]), wishlist, selected_wishlist_indexes)
-                        st.success("Selected wishlist products were marked as ordered.")
-                        st.rerun()
-                ready_quote = st.session_state.get(quote_state_key)
-                if ready_quote:
-                    st.download_button(
-                        "Download wishlist quote PDF",
-                        data=ready_quote["pdf"],
-                        file_name=f"{ready_quote['quote_number']}.pdf",
-                        mime="application/pdf",
-                        key=f"download-wishlist-quote-{row['id']}-{ready_quote['quote_number']}",
-                        width="stretch",
-                    )
 
         if row["status"] == "Following":
             if row["on_hold"]:
@@ -6255,11 +6178,20 @@ def cart_page() -> None:
                 with info:
                     color_label = item_color_label(item)
                     color_line = f" · {color_label}" if color_label else ""
-                    st.markdown(f"**{item['name']}**  \n{item['width']:.1f}\" W × {item['height']:.1f}\" H · {item['direction']}  \n{item['glass']} glass · {item['frame']} finish{color_line} · Qty {item['quantity']}")
+                    area_sqft = float(item.get("area_sqft") or (float(item.get("width") or 0) * float(item.get("height") or 0) / 144))
+                    st.markdown(
+                        f"**{item['name']}**  \n"
+                        f'{item["width"]:.1f}" W × {item["height"]:.1f}" H · {area_sqft:.2f} sq ft · {item["direction"]}  \n'
+                        f"{item['glass']} glass · {item['frame']} finish{color_line} · Qty {item['quantity']}"
+                    )
                     edit_state_key = f"cart-edit-{line_id}"
                     if st.session_state.get(edit_state_key, False):
-                        edit_width_col, edit_height_col, edit_qty_col = st.columns([1, 1, 0.8])
-                        with edit_width_col:
+                        direction_options = option_tuple_with_current(product.directions, str(item.get("direction") or ""))
+                        glass_options = option_tuple_with_current(product.glass_colors, str(item.get("glass") or ""))
+                        frame_options = option_tuple_with_current(product.frame_colors, str(item.get("frame") or ""))
+                        color_options = option_tuple_with_current(product.color_options or product.frame_colors, str(item.get("color") or ""))
+                        edit_size_cols = st.columns([1, 1, 0.8])
+                        with edit_size_cols[0]:
                             cart_width = st.number_input(
                                 "Width (inches)",
                                 min_value=12.0,
@@ -6268,7 +6200,7 @@ def cart_page() -> None:
                                 step=0.5,
                                 key=f"cart-width-{line_id}",
                             )
-                        with edit_height_col:
+                        with edit_size_cols[1]:
                             cart_height = st.number_input(
                                 "Height (inches)",
                                 min_value=12.0,
@@ -6277,7 +6209,7 @@ def cart_page() -> None:
                                 step=0.5,
                                 key=f"cart-height-{line_id}",
                             )
-                        with edit_qty_col:
+                        with edit_size_cols[2]:
                             cart_quantity = st.number_input(
                                 "Qty",
                                 min_value=1,
@@ -6286,7 +6218,50 @@ def cart_page() -> None:
                                 step=1,
                                 key=f"cart-qty-{line_id}",
                             )
-                        if update_cart_item_configuration(item, product, cart_width, cart_height, int(cart_quantity)):
+                        edit_option_cols = st.columns(4)
+                        with edit_option_cols[0]:
+                            cart_direction = st.selectbox(
+                                "Opening / handling",
+                                direction_options,
+                                index=option_index(direction_options, str(item.get("direction") or "")),
+                                key=f"cart-direction-{line_id}",
+                            )
+                        with edit_option_cols[1]:
+                            cart_glass = st.selectbox(
+                                "Glass",
+                                glass_options,
+                                index=option_index(glass_options, str(item.get("glass") or "")),
+                                key=f"cart-glass-{line_id}",
+                            )
+                        with edit_option_cols[2]:
+                            cart_frame = st.selectbox(
+                                "Frame / finish",
+                                frame_options,
+                                index=option_index(frame_options, str(item.get("frame") or "")),
+                                key=f"cart-frame-{line_id}",
+                            )
+                        with edit_option_cols[3]:
+                            cart_color = st.selectbox(
+                                "Color",
+                                color_options,
+                                index=option_index(color_options, str(item.get("color") or "")),
+                                key=f"cart-color-{line_id}",
+                            )
+                        cart_notes = st.text_input("Item notes", value=str(item.get("notes") or ""), key=f"cart-notes-{line_id}")
+                        edited_area_sqft = float(cart_width) * float(cart_height) / 144
+                        st.caption(f"Area: {edited_area_sqft:.2f} sq ft")
+                        if update_cart_item_configuration(
+                            item,
+                            product,
+                            cart_width,
+                            cart_height,
+                            int(cart_quantity),
+                            direction=str(cart_direction),
+                            glass=str(cart_glass),
+                            frame=str(cart_frame),
+                            color=str(cart_color),
+                            notes=str(cart_notes),
+                        ):
                             save_customer_cart(st.session_state.active_customer_id)
                             st.rerun()
                     stock_label, stock_color = inventory_status_text(
@@ -6431,15 +6406,6 @@ def cart_page() -> None:
         if st.session_state.active_customer_id and st.button("Save cart to this customer", width="stretch"):
             save_customer_cart(st.session_state.active_customer_id)
             st.success("Customer cart saved.")
-        if st.button("Save cart as customer wishlist", width="stretch"):
-            if st.session_state.active_customer_id:
-                total_items, added_items = append_cart_to_customer_wishlist(st.session_state.active_customer_id)
-                st.success(f"Added {added_items} cart item(s) to this customer's wishlist. Wishlist now has {total_items} item(s).")
-            else:
-                st.session_state.wishlist_draft = append_wishlist_items(st.session_state.get("wishlist_draft", []), wishlist_from_cart())
-                st.session_state.customer_editor_id = None
-                st.session_state.page = "Customers"
-                st.rerun()
         if st.button("Continue shopping", width="stretch"):
             st.session_state.page = "Catalog"
             st.rerun()
