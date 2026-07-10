@@ -2450,7 +2450,7 @@ def quote_items_match_ordered_products(payload: dict[str, Any], wishlist: list[d
 def order_summary_from_ordered_products(wishlist: list[dict[str, Any]]) -> dict[str, float | str]:
     ordered_items = ordered_wishlist_items(wishlist)
     product_total = wishlist_total(ordered_items)
-    tax = product_total * FIXED_SALES_TAX_RATE
+    tax = 0.0
     installation = 0.0
     shipping = 0.0
     return {
@@ -2458,7 +2458,7 @@ def order_summary_from_ordered_products(wishlist: list[dict[str, Any]]) -> dict[
         "subtotal": product_total,
         "discount": 0.0,
         "tax": tax,
-        "tax_rate": FIXED_SALES_TAX_RATE * 100,
+        "tax_rate": 0.0,
         "installation": installation,
         "shipping": shipping,
         "total": product_total + tax + installation + shipping,
@@ -3689,7 +3689,7 @@ def mark_wishlist_items_ordered(customer_id: int, wishlist: list[dict[str, Any]]
         dict.fromkeys(str(item.get("name") or item.get("product_id") or "Product") for item in selected_items)
     )
     product_total = wishlist_total(selected_items)
-    tax = product_total * FIXED_SALES_TAX_RATE
+    tax = 0.0
     total = product_total + tax
     first_payment_due = product_total * 0.5
     second_payment_due = product_total * 0.5 + tax
