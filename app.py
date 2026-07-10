@@ -3038,7 +3038,67 @@ def wishlist_product_ids(wishlist: list[dict[str, Any]]) -> list[str]:
     ]
 
 
-def render_wishlist(wishlist: list[dict[str, Any]], selection_key: str = "", title: str = "Wishlist") -> list[int]:
+def wishlist_item_to_cart_item(item: dict[str, Any]) -> dict[str, Any]:
+    product_id = str(item.get("product_id") or "")
+    product = get_product_or_none(product_id) if product_id else None
+    width = float(item.get("width") or 72.0)
+    height = float(item.get("height") or 96.0)
+    quantity = int(item.get("quantity") or 1)
+    direction = str(item.get("direction") or (product.directions[0] if product and product.directions else ""))
+    glass = str(item.get("glass") or (product.glass_colors[0] if product and product.glass_colors else ""))
+    frame = str(item.get("frame") or (product.frame_colors[0] if product and product.frame_colors else ""))
+    color = str(item.get("color") or "")
+    calculated_unit = float(item.get("original_unit_price") or item.get("unit_price") or 0.0)
+    area_sqft = width * height / 144
+    base_rate = float(item.get("base_rate") or (product.base_rate if product else 0.0) or 0.0)
+    sales_base_rate = float(item.get("sales_base_rate") or base_rate or 0.0)
+    if product:
+        calculated_unit, breakdown = price_product(product, width, height, glass, frame)
+        area_sqft = float(breakdown.get("area_sqft") or area_sqft)
+    unit_price = float(item.get("unit_price") or calculated_unit or 0.0)
+    return {
+        "line_id": hashlib.sha1(f"wishlist-{product_id}-{datetime.now().isoformat()}".encode()).hexdigest()[:10],
+        "product_id": product_id,
+        "name": str(item.get("name") or (product.name if product else "Product")),
+        "category": str(item.get("category") or (product.category if product else "")),
+        "direction": direction,
+        "glass": glass,
+        "frame": frame,
+        "color": color,
+        "width": width,
+        "height": height,
+        "quantity": quantity,
+        "area_sqft": area_sqft,
+        "base_rate": base_rate,
+        "sales_base_rate": sales_base_rate,
+        "original_unit_price": calculated_unit,
+        "unit_price": unit_price,
+        "line_total": unit_price * quantity,
+        "price_adjusted": abs(unit_price - calculated_unit) > 0.005,
+        "price_adjustment_mode": "unit" if abs(unit_price - calculated_unit) > 0.005 else "",
+        "notes": str(item.get("notes") or ""),
+    }
+
+
+def add_wishlist_item_to_cart(customer_id: int, item: dict[str, Any]) -> str:
+    set_active_customer(customer_id, load_cart=True)
+    cart_item = wishlist_item_to_cart_item(item)
+    item_key = cart_merge_key(cart_item)
+    merged = add_or_merge_cart_item(cart_item)
+    target_line_id = str(cart_item["line_id"])
+    if merged:
+        for existing in st.session_state.cart:
+            normalize_cart_item(existing)
+            if cart_merge_key(existing) == item_key:
+                target_line_id = str(existing.get("line_id") or target_line_id)
+                break
+    save_customer_cart(customer_id)
+    st.session_state.page = "Cart"
+    st.session_state[f"cart-edit-{target_line_id}"] = True
+    return target_line_id
+
+
+def render_wishlist(wishlist: list[dict[str, Any]], selection_key: str = "", title: str = "Wishlist", cart_customer_id: int | None = None) -> list[int]:
     if not wishlist:
         st.caption("No wishlist saved yet.")
         return []
@@ -3070,10 +3130,17 @@ def render_wishlist(wishlist: list[dict[str, Any]], selection_key: str = "", tit
             line += f"  \nEstimated: **{money(amount)}**"
 
         with st.container(border=True):
-            if selection_key:
+            if selection_key and cart_customer_id:
+                image_col, info_col, edit_col, select_col = st.columns([0.55, 3.0, 0.9, 0.8], vertical_alignment="top")
+            elif selection_key:
                 image_col, info_col, select_col = st.columns([0.55, 3.45, 0.8], vertical_alignment="top")
+                edit_col = None
+            elif cart_customer_id:
+                image_col, info_col, edit_col = st.columns([0.55, 3.45, 1.0], vertical_alignment="top")
+                select_col = None
             else:
                 image_col, info_col = st.columns([0.55, 4], vertical_alignment="top")
+                edit_col = None
                 select_col = None
             with image_col:
                 product = get_product_or_none(product_id) if product_id else None
@@ -3090,6 +3157,12 @@ def render_wishlist(wishlist: list[dict[str, Any]], selection_key: str = "", tit
                     st.markdown(f"<span style='color:{stock_color};font-weight:700'>{stock_label}</span>", unsafe_allow_html=True)
                 if item.get("notes"):
                     st.caption(str(item["notes"]))
+            if edit_col is not None:
+                with edit_col:
+                    if st.button("Edit in cart", key=f"wishlist-edit-cart-{cart_customer_id}-{index - 1}", width="stretch"):
+                        add_wishlist_item_to_cart(int(cart_customer_id), item)
+                        st.toast(f"{name} added to cart for editing.")
+                        st.rerun()
             if select_col is not None:
                 with select_col:
                     if st.checkbox(
@@ -4494,6 +4567,7 @@ def customer_card(row: sqlite3.Row) -> None:
                 wishlist,
                 selection_key=f"ordered-wishlist-item-{row['id']}" if row["status"] != "Ordered" else "",
                 title="Ordered products" if row["status"] == "Ordered" else "Wishlist",
+                cart_customer_id=int(row["id"]),
             )
             if row["status"] != "Ordered":
                 if st.button(
