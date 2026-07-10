@@ -1500,6 +1500,38 @@ SUPABASE_DATE_COLUMNS = {
     "lost_date",
 }
 
+# Customer order rows stored in Supabase. This table is the durable order ledger
+# used by Finance and by each customer's "Customer orders" section.
+SUPABASE_ORDER_COLUMNS = {
+    "id",
+    "customer_id",
+    "order_number",
+    "quote_number",
+    "created_at",
+    "order_date",
+    "salesperson",
+    "subtotal",
+    "discount",
+    "tax",
+    "installation",
+    "shipping",
+    "total",
+    "first_payment_date",
+    "first_payment_amount",
+    "first_payment_paid",
+    "second_payment_enabled",
+    "second_payment_date",
+    "second_payment_amount",
+    "second_payment_paid",
+    "payload",
+}
+SUPABASE_ORDER_DATE_COLUMNS = {
+    "created_at",
+    "order_date",
+    "first_payment_date",
+    "second_payment_date",
+}
+
 
 def secret_or_env(name: str, default: str = "") -> str:
     try:
@@ -1511,6 +1543,10 @@ def secret_or_env(name: str, default: str = "") -> str:
 
 def supabase_customers_enabled() -> bool:
     return bool(secret_or_env("SUPABASE_URL") and (secret_or_env("SUPABASE_SERVICE_KEY") or secret_or_env("SUPABASE_KEY")))
+
+
+def supabase_orders_enabled() -> bool:
+    return supabase_customers_enabled()
 
 
 def supabase_api_key() -> str:
@@ -2420,48 +2456,166 @@ def load_customer_cart(customer_id: int | None) -> list[dict[str, Any]]:
 
 
 def order_number() -> str:
-    return "O-" + datetime.now().strftime("%Y%m%d-%H%M%S")
+    return f"O-{datetime.now():%Y%m%d-%H%M%S%f}-{secrets.token_hex(2).upper()}"
 
 
-def save_customer_order(customer_id: int, order: dict[str, Any]) -> int:
-    payload = json.dumps(order, ensure_ascii=False)
+def prepared_order_row(customer_id: int, order: dict[str, Any]) -> dict[str, Any]:
+    row = dict(order)
+    row["customer_id"] = int(customer_id)
+    row["order_number"] = str(row.get("order_number") or order_number())
+    row["quote_number"] = str(row.get("quote_number") or "")
+    row["created_at"] = str(row.get("created_at") or datetime.now().isoformat(timespec="seconds"))
+    row["order_date"] = str(row.get("order_date") or today_iso())
+    row["salesperson"] = str(row.get("salesperson") or "")
+    row["subtotal"] = float(row.get("subtotal") or 0)
+    row["discount"] = float(row.get("discount") or 0)
+    row["tax"] = float(row.get("tax") or 0)
+    row["installation"] = float(row.get("installation_fee") or row.get("installation") or 0)
+    row["shipping"] = float(row.get("shipping_fee") or row.get("shipping") or 0)
+    row["total"] = float(row.get("total") or 0)
+    row["first_payment_date"] = str(row.get("first_payment_date") or "")
+    row["first_payment_amount"] = float(row.get("first_payment_amount") or 0)
+    row["first_payment_paid"] = int(bool(row.get("first_payment_paid", False)))
+    row["second_payment_enabled"] = int(bool(row.get("second_payment_enabled", True)))
+    row["second_payment_date"] = str(row.get("second_payment_date") or "") if row["second_payment_enabled"] else ""
+    row["second_payment_amount"] = float(row.get("second_payment_amount") or 0) if row["second_payment_enabled"] else 0.0
+    row["second_payment_paid"] = int(bool(row.get("second_payment_paid", False))) if row["second_payment_enabled"] else 0
+    row["payload"] = dict(order)
+    row["payload"].update(
+        {
+            "order_number": row["order_number"],
+            "customer_id": row["customer_id"],
+            "created_at": row["created_at"],
+            "order_date": row["order_date"],
+            "subtotal": row["subtotal"],
+            "discount": row["discount"],
+            "tax": row["tax"],
+            "installation_fee": row["installation"],
+            "shipping_fee": row["shipping"],
+            "total": row["total"],
+            "first_payment_date": row["first_payment_date"],
+            "first_payment_amount": row["first_payment_amount"],
+            "first_payment_paid": bool(row["first_payment_paid"]),
+            "second_payment_enabled": bool(row["second_payment_enabled"]),
+            "second_payment_date": row["second_payment_date"],
+            "second_payment_amount": row["second_payment_amount"],
+            "second_payment_paid": bool(row["second_payment_paid"]),
+        }
+    )
+    return row
+
+
+def supabase_order_payload(order_row: dict[str, Any], include_id: bool = False) -> dict[str, Any]:
+    payload: dict[str, Any] = {}
+    for key in SUPABASE_ORDER_COLUMNS:
+        if key == "id" and not include_id:
+            continue
+        if key not in order_row:
+            continue
+        value = order_row.get(key)
+        if key in SUPABASE_ORDER_DATE_COLUMNS and value == "":
+            value = None
+        if key in {"first_payment_paid", "second_payment_enabled", "second_payment_paid"}:
+            value = bool(value)
+        if key == "payload" and isinstance(value, str):
+            try:
+                value = json.loads(value or "{}")
+            except (TypeError, ValueError):
+                value = {}
+        payload[key] = value
+    return payload
+
+
+def sqlite_order_insert_values(order_row: dict[str, Any]) -> tuple[Any, ...]:
+    raw_payload = order_row.get("payload")
+    payload_text = raw_payload if isinstance(raw_payload, str) else json.dumps(raw_payload or {}, ensure_ascii=False)
+    return (
+        None,
+        int(order_row.get("customer_id") or 0),
+        str(order_row.get("order_number") or order_number()),
+        str(order_row.get("quote_number") or ""),
+        str(order_row.get("created_at") or datetime.now().isoformat(timespec="seconds")),
+        str(order_row.get("order_date") or today_iso()),
+        str(order_row.get("salesperson") or ""),
+        float(order_row.get("subtotal") or 0),
+        float(order_row.get("discount") or 0),
+        float(order_row.get("tax") or 0),
+        float(order_row.get("installation") or order_row.get("installation_fee") or 0),
+        float(order_row.get("shipping") or order_row.get("shipping_fee") or 0),
+        float(order_row.get("total") or 0),
+        str(order_row.get("first_payment_date") or ""),
+        float(order_row.get("first_payment_amount") or 0),
+        int(bool(order_row.get("first_payment_paid", False))),
+        int(bool(order_row.get("second_payment_enabled", True))),
+        str(order_row.get("second_payment_date") or ""),
+        float(order_row.get("second_payment_amount") or 0),
+        int(bool(order_row.get("second_payment_paid", False))),
+        payload_text,
+    )
+
+
+def mirror_order_to_sqlite(order_row: dict[str, Any]) -> int:
+    values = sqlite_order_insert_values(order_row)
     with db_connect() as conn:
         cursor = conn.execute(
             """
             INSERT INTO customer_orders (
-                customer_id, order_number, quote_number, created_at, order_date, salesperson,
+                id, customer_id, order_number, quote_number, created_at, order_date, salesperson,
                 subtotal, discount, tax, installation, shipping, total,
                 first_payment_date, first_payment_amount, first_payment_paid,
                 second_payment_enabled, second_payment_date, second_payment_amount, second_payment_paid, payload
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(order_number) DO UPDATE SET
+                customer_id = excluded.customer_id,
+                quote_number = excluded.quote_number,
+                created_at = excluded.created_at,
+                order_date = excluded.order_date,
+                salesperson = excluded.salesperson,
+                subtotal = excluded.subtotal,
+                discount = excluded.discount,
+                tax = excluded.tax,
+                installation = excluded.installation,
+                shipping = excluded.shipping,
+                total = excluded.total,
+                first_payment_date = excluded.first_payment_date,
+                first_payment_amount = excluded.first_payment_amount,
+                first_payment_paid = excluded.first_payment_paid,
+                second_payment_enabled = excluded.second_payment_enabled,
+                second_payment_date = excluded.second_payment_date,
+                second_payment_amount = excluded.second_payment_amount,
+                second_payment_paid = excluded.second_payment_paid,
+                payload = excluded.payload
             """,
-            (
-                int(customer_id),
-                str(order.get("order_number") or order_number()),
-                str(order.get("quote_number") or ""),
-                str(order.get("created_at") or datetime.now().isoformat(timespec="seconds")),
-                str(order.get("order_date") or today_iso()),
-                str(order.get("salesperson") or ""),
-                float(order.get("subtotal") or 0),
-                float(order.get("discount") or 0),
-                float(order.get("tax") or 0),
-                float(order.get("installation_fee") or order.get("installation") or 0),
-                float(order.get("shipping_fee") or order.get("shipping") or 0),
-                float(order.get("total") or 0),
-                str(order.get("first_payment_date") or ""),
-                float(order.get("first_payment_amount") or 0),
-                int(bool(order.get("first_payment_paid", False))),
-                int(bool(order.get("second_payment_enabled", True))),
-                str(order.get("second_payment_date") or ""),
-                float(order.get("second_payment_amount") or 0),
-                int(bool(order.get("second_payment_paid", False))),
-                payload,
-            ),
+            values,
         )
-        return int(cursor.lastrowid)
+        row = conn.execute("SELECT id FROM customer_orders WHERE order_number = ?", (values[2],)).fetchone()
+        return int(row[0]) if row else int(cursor.lastrowid or 0)
 
 
-def customer_order_rows(customer_id: int | None = None) -> list[sqlite3.Row]:
+def supabase_save_customer_order(customer_id: int, order: dict[str, Any]) -> int | None:
+    order_row = prepared_order_row(customer_id, order)
+    rows = supabase_request("POST", "customer_orders", payload=supabase_order_payload(order_row))
+    if not rows:
+        return None
+    saved = dict(rows[0])
+    saved_order = {**order_row, **saved}
+    mirror_order_to_sqlite(saved_order)
+    return int(saved.get("id") or 0) or None
+
+
+def save_customer_order(customer_id: int, order: dict[str, Any]) -> int:
+    order_row = prepared_order_row(customer_id, order)
+    if supabase_orders_enabled():
+        try:
+            saved_id = supabase_save_customer_order(customer_id, order)
+            if saved_id:
+                return saved_id
+        except Exception as exc:
+            warn_supabase_fallback(f"Order could not be saved to Supabase; saved locally for now. {exc}")
+    return mirror_order_to_sqlite(order_row)
+
+
+def sqlite_customer_order_rows(customer_id: int | None = None) -> list[sqlite3.Row]:
     with db_connect() as conn:
         conn.row_factory = sqlite3.Row
         if customer_id:
@@ -2470,6 +2624,27 @@ def customer_order_rows(customer_id: int | None = None) -> list[sqlite3.Row]:
                 (int(customer_id),),
             ).fetchall()
         return conn.execute("SELECT * FROM customer_orders ORDER BY order_date DESC, created_at DESC").fetchall()
+
+
+def supabase_customer_order_rows(customer_id: int | None = None) -> list[sqlite3.Row]:
+    params = {"select": "*", "order": "order_date.desc,created_at.desc"}
+    if customer_id:
+        params["customer_id"] = f"eq.{int(customer_id)}"
+    rows = supabase_request("GET", "customer_orders", query=parse.urlencode(params), prefer="")
+    if isinstance(rows, list):
+        for row in rows:
+            if isinstance(row, dict):
+                mirror_order_to_sqlite(row)
+    return sqlite_customer_order_rows(customer_id)
+
+
+def customer_order_rows(customer_id: int | None = None) -> list[sqlite3.Row]:
+    if supabase_orders_enabled():
+        try:
+            return supabase_customer_order_rows(customer_id)
+        except Exception as exc:
+            warn_supabase_fallback(f"Supabase order sync failed, showing local orders for now. {exc}")
+    return sqlite_customer_order_rows(customer_id)
 
 
 def order_payload(row: sqlite3.Row) -> dict[str, Any]:
@@ -2483,6 +2658,56 @@ def order_payload(row: sqlite3.Row) -> dict[str, Any]:
 def latest_customer_order(customer_id: int) -> sqlite3.Row | None:
     rows = customer_order_rows(customer_id)
     return rows[0] if rows else None
+
+
+def update_latest_customer_order_payment_schedule(
+    customer_id: int,
+    first_payment_date_value: str,
+    first_payment_amount: float,
+    first_payment_paid: bool,
+    second_payment_enabled: bool,
+    second_payment_date_value: str,
+    second_payment_amount: float,
+    second_payment_paid: bool,
+) -> None:
+    rows = sqlite_customer_order_rows(customer_id)
+    if not rows:
+        return
+    latest = rows[0]
+    updates = {
+        "first_payment_date": first_payment_date_value,
+        "first_payment_amount": max(float(first_payment_amount), 0.0),
+        "first_payment_paid": int(bool(first_payment_paid)),
+        "second_payment_enabled": int(bool(second_payment_enabled)),
+        "second_payment_date": second_payment_date_value if second_payment_enabled else "",
+        "second_payment_amount": max(float(second_payment_amount), 0.0) if second_payment_enabled else 0.0,
+        "second_payment_paid": int(bool(second_payment_paid)) if second_payment_enabled else 0,
+    }
+    payload = order_payload(latest)
+    payload.update(
+        {
+            "first_payment_date": updates["first_payment_date"],
+            "first_payment_amount": updates["first_payment_amount"],
+            "first_payment_paid": bool(updates["first_payment_paid"]),
+            "second_payment_enabled": bool(updates["second_payment_enabled"]),
+            "second_payment_date": updates["second_payment_date"],
+            "second_payment_amount": updates["second_payment_amount"],
+            "second_payment_paid": bool(updates["second_payment_paid"]),
+        }
+    )
+    updates["payload"] = json.dumps(payload, ensure_ascii=False)
+    with db_connect() as conn:
+        assignments = ", ".join(f"{key} = ?" for key in updates)
+        conn.execute(f"UPDATE customer_orders SET {assignments} WHERE id = ?", [*updates.values(), int(latest["id"])])
+    if supabase_orders_enabled():
+        supabase_updates = supabase_order_payload(
+            {
+                **updates,
+                "payload": payload,
+            }
+        )
+        query = parse.urlencode({"order_number": f"eq.{latest['order_number']}"})
+        supabase_request("PATCH", "customer_orders", query=query, payload=supabase_updates)
 
 
 def order_summary_from_order_row(row: sqlite3.Row) -> dict[str, float | str]:
@@ -4018,6 +4243,20 @@ def update_customer_payment_schedule(
         if use_second_payment
         else "Second payment: not required."
     )
+    try:
+        update_latest_customer_order_payment_schedule(
+            customer_id,
+            first_payment_date.isoformat(),
+            first_amount,
+            bool(first_payment_paid),
+            use_second_payment,
+            second_date_value,
+            second_amount,
+            second_paid_value,
+        )
+    except Exception as exc:
+        st.error(f"Customer payment schedule was saved, but the order ledger could not be updated: {exc}")
+        st.stop()
     add_customer_timeline_event(
         customer_id,
         date.today(),
@@ -4137,9 +4376,15 @@ def mark_wishlist_items_ordered(customer_id: int, wishlist: list[dict[str, Any]]
         )
 
 
+def supabase_delete_customer_orders(customer_id: int) -> None:
+    query = parse.urlencode({"customer_id": f"eq.{int(customer_id)}"})
+    supabase_request("DELETE", "customer_orders", query=query, prefer="")
+
+
 def delete_customer(customer_id: int) -> None:
     if supabase_customers_enabled():
         try:
+            supabase_delete_customer_orders(customer_id)
             supabase_delete_customer(customer_id)
         except Exception as exc:
             st.error(f"Customer could not be deleted from Supabase: {exc}")
