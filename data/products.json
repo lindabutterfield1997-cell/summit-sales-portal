@@ -2975,6 +2975,88 @@
     "stock_information": ""
   },
   {
+    "id": "FW-340",
+    "section": "Windows",
+    "category": "Fixed Window",
+    "name": "Vinyl Fixed Window",
+    "subtitle": "Classic vinyl picture window",
+    "description": "Fixed vinyl window with a clean non-opening frame, designed for simple daylight and view openings.",
+    "base_rate": 25.0,
+    "minimum_price": 0.0,
+    "directions": [
+      "Fixed"
+    ],
+    "glass_colors": [
+      "Clear",
+      "Low-E",
+      "Grey",
+      "Bronze",
+      "Frosted"
+    ],
+    "frame_colors": [
+      "White",
+      "Black",
+      "Tan"
+    ],
+    "accent": "#78848b",
+    "hero_image": "uploads/fw-340-vinyl-fixed-window-3x2.webp",
+    "detail_images": [
+      "uploads/fw-340-vinyl-fixed-window-3x2.webp"
+    ],
+    "active": true,
+    "updated_at": "2026-07-13T10:00:00",
+    "color_options": [
+      "White",
+      "Black",
+      "Tan"
+    ],
+    "color_information": "",
+    "stock_information": ""
+  },
+  {
+    "id": "FW-350",
+    "section": "Windows",
+    "category": "Fixed Window",
+    "name": "Aluminum Fixed Window",
+    "subtitle": "Aluminum picture window",
+    "description": "Fixed aluminum window with a slim non-opening frame for clear views and modern openings.",
+    "base_rate": 35.0,
+    "minimum_price": 0.0,
+    "directions": [
+      "Fixed"
+    ],
+    "glass_colors": [
+      "Clear",
+      "Low-E",
+      "Grey",
+      "Bronze",
+      "Frosted"
+    ],
+    "frame_colors": [
+      "Black",
+      "White",
+      "Charcoal",
+      "Bronze",
+      "Anodized"
+    ],
+    "accent": "#78848b",
+    "hero_image": "uploads/fw-350-aluminum-fixed-window-3x2.webp",
+    "detail_images": [
+      "uploads/fw-350-aluminum-fixed-window-3x2.webp"
+    ],
+    "active": true,
+    "updated_at": "2026-07-13T10:00:00",
+    "color_options": [
+      "Black",
+      "White",
+      "Charcoal",
+      "Bronze",
+      "Anodized"
+    ],
+    "color_information": "",
+    "stock_information": ""
+  },
+  {
     "id": "SH-620",
     "section": "Windows",
     "category": "Single Hung Window",
