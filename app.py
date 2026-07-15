@@ -67,6 +67,7 @@ BRAND_SKY = "#22ADD7"
 BRAND_LIGHT = "#EAF4FA"
 BRAND_LINE = "#9FB7CC"
 FIXED_SALES_TAX_RATE = 0.0775
+DEPOSIT_REFUND_NOTICE = "Deposit is non-refundable. Custom orders are not returnable or exchangeable once the deposit is paid, except as required by applicable law or agreed in writing by SUMMIT Windows & Doors."
 
 st.set_page_config(
     page_title="FrameFlow | Doors & Windows",
@@ -2927,6 +2928,7 @@ def render_order_summary(summary: dict[str, float | str]) -> None:
           {f'<div style="display:flex;justify-content:space-between;margin:5px 0"><span>Shipping</span><span>{money(shipping)}</span></div>' if shipping else ''}
           <div style="display:flex;justify-content:space-between;margin:5px 0"><span>Installation</span><span>{money(installation)}</span></div>
           <div style="border-top:1px solid #dfe4e0;margin-top:9px;padding-top:9px;display:flex;justify-content:space-between;font-weight:800"><span>Order total</span><span>{money(total)}</span></div>
+          <div style="margin-top:12px;padding:10px 12px;border:1px solid #d8dfd9;border-radius:8px;background:#fff;color:#4f5d56;font-size:12.5px;line-height:1.4"><b>Deposit and custom order policy:</b> {html.escape(DEPOSIT_REFUND_NOTICE)}</div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -7573,7 +7575,10 @@ def build_receipt_pdf(
             ]
         )
     )
-    story.extend([Paragraph("<b>Payment schedule</b>", styles["Small"]), Spacer(1, 6), payment_table, Spacer(1, 18)])
+    story.extend([Paragraph("<b>Payment schedule</b>", styles["Small"]), Spacer(1, 6), payment_table, Spacer(1, 12)])
+    story.append(Paragraph("<b>Deposit and custom order policy</b>", styles["Small"]))
+    story.append(Paragraph(DEPOSIT_REFUND_NOTICE, styles["Tiny"]))
+    story.append(Spacer(1, 10))
     story.append(Paragraph("Thank you for your order. This receipt reflects the current order summary saved in the internal sales system.", styles["Tiny"]))
     doc.build(story)
     return buffer.getvalue()
