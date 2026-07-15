@@ -1758,15 +1758,8 @@ def supabase_customer_payload(data: dict[str, Any], *, include_created_at: bool 
 def supabase_save_customer(customer_id: int | None, data: dict[str, Any]) -> int:
     payload = supabase_customer_payload(data, include_created_at=not bool(customer_id))
     if customer_id:
-        payload["id"] = int(customer_id)
-        query = "on_conflict=id"
-        rows = supabase_request(
-            "POST",
-            "customers",
-            query=query,
-            payload=payload,
-            prefer="resolution=merge-duplicates,return=representation",
-        )
+        query = f"id=eq.{int(customer_id)}"
+        rows = supabase_request("PATCH", "customers", query=query, payload=payload)
         return int(rows[0]["id"] if rows else customer_id)
     rows = supabase_request("POST", "customers", payload=payload)
     if not rows:
@@ -1783,6 +1776,28 @@ def supabase_update_customer(customer_id: int, updates: dict[str, Any]) -> None:
 
 def supabase_delete_customer(customer_id: int) -> None:
     supabase_request("DELETE", "customers", query=f"id=eq.{int(customer_id)}", payload=None, prefer="return=minimal")
+
+
+def supabase_customer_id_for_order(local_customer_id: int, customer: sqlite3.Row | dict[str, Any] | None) -> int:
+    lookup_fields = []
+    email = str(row_value(customer, "email", "") or "").strip()
+    phone = str(row_value(customer, "phone", "") or "").strip()
+    if email:
+        lookup_fields.append({"email": f"eq.{email.lower()}"})
+    if phone:
+        lookup_fields.append({"phone": f"eq.{phone}"})
+    for lookup in lookup_fields:
+        query_values = {"select": "id", "limit": "1", **lookup}
+        rows = supabase_request("GET", "customers", query=parse.urlencode(query_values), prefer="")
+        if rows:
+            return int(rows[0]["id"])
+    if customer:
+        payload = {key: row_value(customer, key) for key in SUPABASE_CUSTOMER_COLUMNS if key != "id"}
+        payload.setdefault("status", "Ordered")
+        rows = supabase_request("POST", "customers", payload=supabase_customer_payload(payload, include_created_at=True))
+        if rows:
+            return int(rows[0]["id"])
+    return int(local_customer_id)
 
 
 def option_index(options: Sequence[str], value: str | None) -> int:
@@ -2617,11 +2632,11 @@ def mirror_order_to_sqlite(order_row: dict[str, Any]) -> int:
 
 def supabase_save_customer_order(customer_id: int, order: dict[str, Any]) -> int | None:
     customer = finance_customer_by_id(customer_id) or sqlite_customer_by_id(customer_id)
-    if customer:
-        supabase_save_customer(customer_id, {key: row_value(customer, key) for key in SUPABASE_CUSTOMER_COLUMNS if key != "id"})
-    order_row = prepared_order_row(customer_id, order)
-    payload = supabase_order_payload(order_row)
-    order_no = str(order_row.get("order_number") or "")
+    supabase_customer_id = supabase_customer_id_for_order(customer_id, customer)
+    local_order_row = prepared_order_row(customer_id, order)
+    supabase_order_row = {**local_order_row, "customer_id": supabase_customer_id}
+    payload = supabase_order_payload(supabase_order_row)
+    order_no = str(local_order_row.get("order_number") or "")
     existing_rows = []
     if order_no:
         query = parse.urlencode({"select": "id", "order_number": f"eq.{order_no}", "limit": "1"})
@@ -2634,10 +2649,8 @@ def supabase_save_customer_order(customer_id: int, order: dict[str, Any]) -> int
         rows = supabase_request("POST", "customer_orders", payload=payload)
     if not rows:
         return None
-    saved = dict(rows[0])
-    saved_order = {**order_row, **saved}
-    mirror_order_to_sqlite(saved_order)
-    return int(saved.get("id") or 0) or None
+    mirror_order_to_sqlite(local_order_row)
+    return int(rows[0].get("id") or 0) or None
 
 
 def save_customer_order(customer_id: int, order: dict[str, Any]) -> int:
