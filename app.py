@@ -1758,8 +1758,15 @@ def supabase_customer_payload(data: dict[str, Any], *, include_created_at: bool 
 def supabase_save_customer(customer_id: int | None, data: dict[str, Any]) -> int:
     payload = supabase_customer_payload(data, include_created_at=not bool(customer_id))
     if customer_id:
-        query = f"id=eq.{int(customer_id)}"
-        rows = supabase_request("PATCH", "customers", query=query, payload=payload)
+        payload["id"] = int(customer_id)
+        query = "on_conflict=id"
+        rows = supabase_request(
+            "POST",
+            "customers",
+            query=query,
+            payload=payload,
+            prefer="resolution=merge-duplicates,return=representation",
+        )
         return int(rows[0]["id"] if rows else customer_id)
     rows = supabase_request("POST", "customers", payload=payload)
     if not rows:
@@ -2609,6 +2616,9 @@ def mirror_order_to_sqlite(order_row: dict[str, Any]) -> int:
 
 
 def supabase_save_customer_order(customer_id: int, order: dict[str, Any]) -> int | None:
+    customer = finance_customer_by_id(customer_id) or sqlite_customer_by_id(customer_id)
+    if customer:
+        supabase_save_customer(customer_id, {key: row_value(customer, key) for key in SUPABASE_CUSTOMER_COLUMNS if key != "id"})
     order_row = prepared_order_row(customer_id, order)
     rows = supabase_request("POST", "customer_orders", payload=supabase_order_payload(order_row))
     if not rows:
