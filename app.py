@@ -7116,7 +7116,7 @@ def order_checkout_page() -> None:
         if not customer_options:
             st.error("Please create a customer before checking out.")
             return
-        with st.form("order-checkout-form"):
+        with st.container(border=True):
             selected_customer_id = st.selectbox(
                 "Customer / 客户",
                 customer_options,
@@ -7145,7 +7145,7 @@ def order_checkout_page() -> None:
                     second_payment_paid = False
             paid_preview = (first_payment_amount if first_payment_paid else 0.0) + (second_payment_amount if second_payment_enabled and second_payment_paid else 0.0)
             st.caption(f"Order total: {money(total)} · Product amount after discount: {money(product_total)} · Paid now: {money(paid_preview)} · Balance: {money(max(total - paid_preview, 0.0))}")
-            submitted = st.form_submit_button("Check out selected items", type="primary", width="stretch")
+            submitted = st.button("Check out selected items", type="primary", width="stretch", key="submit-order-checkout")
             if submitted:
                 order_no = create_order_from_cart(
                     int(selected_customer_id),
