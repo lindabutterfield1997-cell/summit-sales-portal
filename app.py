@@ -2620,7 +2620,18 @@ def supabase_save_customer_order(customer_id: int, order: dict[str, Any]) -> int
     if customer:
         supabase_save_customer(customer_id, {key: row_value(customer, key) for key in SUPABASE_CUSTOMER_COLUMNS if key != "id"})
     order_row = prepared_order_row(customer_id, order)
-    rows = supabase_request("POST", "customer_orders", payload=supabase_order_payload(order_row))
+    payload = supabase_order_payload(order_row)
+    order_no = str(order_row.get("order_number") or "")
+    existing_rows = []
+    if order_no:
+        query = parse.urlencode({"select": "id", "order_number": f"eq.{order_no}", "limit": "1"})
+        existing_rows = supabase_request("GET", "customer_orders", query=query, prefer="")
+    if existing_rows:
+        order_id = int(existing_rows[0]["id"])
+        query = parse.urlencode({"id": f"eq.{order_id}"})
+        rows = supabase_request("PATCH", "customer_orders", query=query, payload=payload)
+    else:
+        rows = supabase_request("POST", "customer_orders", payload=payload)
     if not rows:
         return None
     saved = dict(rows[0])
@@ -4117,7 +4128,32 @@ def save_customer(customer_id: int | None, data: dict[str, Any]) -> int:
 
 
 def ensure_customer_order_from_status(customer_id: int, customer: sqlite3.Row | dict[str, Any], order_day: date) -> None:
-    if latest_customer_order(customer_id):
+    latest_order = latest_customer_order(customer_id)
+    if latest_order:
+        if supabase_orders_enabled():
+            payload = order_payload(latest_order)
+            payload.update({
+                "order_number": latest_order["order_number"],
+                "quote_number": latest_order["quote_number"],
+                "created_at": latest_order["created_at"],
+                "order_date": latest_order["order_date"],
+                "customer_id": int(latest_order["customer_id"]),
+                "salesperson": latest_order["salesperson"] or row_value(customer, "assigned_to") or default_customer_owner(),
+                "subtotal": float(latest_order["subtotal"] or 0),
+                "discount": float(latest_order["discount"] or 0),
+                "tax": float(latest_order["tax"] or 0),
+                "installation_fee": float(latest_order["installation"] or 0),
+                "shipping_fee": float(latest_order["shipping"] or 0),
+                "total": float(latest_order["total"] or 0),
+                "first_payment_date": latest_order["first_payment_date"] or "",
+                "first_payment_amount": float(latest_order["first_payment_amount"] or 0),
+                "first_payment_paid": bool(latest_order["first_payment_paid"]),
+                "second_payment_enabled": bool(latest_order["second_payment_enabled"]),
+                "second_payment_date": latest_order["second_payment_date"] or "",
+                "second_payment_amount": float(latest_order["second_payment_amount"] or 0),
+                "second_payment_paid": bool(latest_order["second_payment_paid"]),
+            })
+            supabase_save_customer_order(customer_id, payload)
         return
     wishlist = parse_wishlist(row_value(customer, "wishlist", "[]"))
     ordered_items = ordered_wishlist_items(wishlist)
