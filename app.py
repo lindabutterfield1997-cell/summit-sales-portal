@@ -4351,6 +4351,7 @@ def update_customer_status(
     elif status == "Ordered":
         order_day = order_date or date.today()
         updates["order_date"] = order_day.isoformat()
+        updates["next_followup_date"] = ""
         if not followup_stage:
             updates["followup_stage"] = "Quoted"
         notes = f"Order date: {display_date(updates['order_date'])}."
@@ -5111,7 +5112,7 @@ def customer_summary_metrics(rows: list[sqlite3.Row]) -> None:
     lost = [row for row in rows if row["status"] == "Lost"]
     due_followups = [
         row for row in rows
-        if row["status"] != "Lost" and not row["on_hold"]
+        if row["status"] == "Following" and not row["on_hold"]
         and row["next_followup_date"] and date_from_iso(row["next_followup_date"]) <= date.today()
     ]
     install_due = [
@@ -5527,7 +5528,7 @@ def customers_page() -> None:
     with overview_tab:
         due_followups = [
             row for row in rows
-            if row["status"] != "Lost" and not row["on_hold"] and row["next_followup_date"]
+            if row["status"] == "Following" and not row["on_hold"] and row["next_followup_date"]
             and date_from_iso(row["next_followup_date"]) <= date.today()
         ]
         due_installs = [
@@ -7211,6 +7212,7 @@ def create_order_from_cart(
         "updated_at": now,
         "order_date": order_date_value.isoformat(),
         "followup_stage": "Quoted",
+        "next_followup_date": "",
         "products_interest": product_names,
         "budget": total,
         "install_status": normalized_install_status(row_value(customer, "install_status")),
