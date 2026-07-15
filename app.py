@@ -2238,6 +2238,22 @@ def sqlite_customer_by_id(customer_id: int) -> sqlite3.Row | None:
         return conn.execute("SELECT * FROM customers WHERE id = ?", (customer_id,)).fetchone()
 
 
+def finance_customer_by_id(customer_id: int) -> sqlite3.Row | dict[str, Any] | None:
+    if supabase_customers_enabled():
+        try:
+            query = parse.urlencode({"select": "*", "id": f"eq.{int(customer_id)}", "limit": "1"})
+            rows = supabase_request("GET", "customers", query=query, prefer="")
+            if rows:
+                row = normalize_customer_row(rows[0])
+                mirror_customer_to_sqlite(int(row["id"]), row)
+                return row
+        except Exception:
+            pass
+    with db_connect() as conn:
+        conn.row_factory = sqlite3.Row
+        return conn.execute("SELECT * FROM customers WHERE id = ?", (int(customer_id),)).fetchone()
+
+
 def find_customer_by_contact(email: str, phone: str) -> sqlite3.Row | dict[str, Any] | None:
     if supabase_customers_enabled():
         try:
@@ -2466,7 +2482,7 @@ def prepared_order_row(customer_id: int, order: dict[str, Any]) -> dict[str, Any
     row["quote_number"] = str(row.get("quote_number") or "")
     row["created_at"] = str(row.get("created_at") or datetime.now().isoformat(timespec="seconds"))
     row["order_date"] = str(row.get("order_date") or today_iso())
-    row["salesperson"] = str(row.get("salesperson") or "")
+    row["salesperson"] = str(row.get("salesperson") or default_customer_owner() or current_employee_name() or "")
     row["subtotal"] = float(row.get("subtotal") or 0)
     row["discount"] = float(row.get("discount") or 0)
     row["tax"] = float(row.get("tax") or 0)
@@ -3264,39 +3280,54 @@ def period_bounds(period: str, anchor: date) -> tuple[date, date]:
 def in_date_range(value: str | None, start: date, end: date) -> bool:
     if not value:
         return False
-    parsed = date_from_iso(value)
+    parsed = date_from_iso(str(value)[:10])
     return start <= parsed <= end
+
+
+def finance_order_date(row: sqlite3.Row | dict[str, Any]) -> str:
+    return str(row_value(row, "order_date") or row_value(row, "created_at") or "")[:10]
 
 
 def finance_order_records() -> list[dict[str, Any]]:
     order_rows = customer_order_rows()
     if order_rows:
         records: list[dict[str, Any]] = []
+        owner = customer_owner_filter()
         for row in order_rows:
-            customer = sqlite_customer_by_id(int(row["customer_id"])) or customer_by_id(int(row["customer_id"]))
-            if customer_owner_filter() and customer and str(row_value(customer, "assigned_to", "")).lower() != customer_owner_filter().lower():
+            customer = finance_customer_by_id(int(row["customer_id"]))
+            assigned_to = str(row_value(customer, "assigned_to", "") or "").strip()
+            order_salesperson = str(row_value(row, "salesperson", "") or "").strip()
+            sales_name = assigned_to or order_salesperson or "Unassigned"
+            if owner and sales_name.lower() != owner.lower():
                 continue
+            first_paid = bool(row_value(row, "first_payment_paid", 0))
+            second_enabled = bool(row_value(row, "second_payment_enabled", 1))
+            second_paid = bool(row_value(row, "second_payment_paid", 0)) if second_enabled else False
+            first_amount = float(row_value(row, "first_payment_amount", 0) or 0)
+            second_amount = float(row_value(row, "second_payment_amount", 0) or 0) if second_enabled else 0.0
+            paid_total = (first_amount if first_paid else 0.0) + (second_amount if second_paid else 0.0)
+            order_total = float(row_value(row, "total", 0) or 0)
             records.append(
                 {
                     "customer_id": int(row["customer_id"]),
                     "customer": row_value(customer, "name", "Unknown customer") if customer else "Unknown customer",
                     "company": row_value(customer, "company", "") if customer else "",
-                    "sales": row["salesperson"] or row_value(customer, "assigned_to", "Unassigned") if customer else row["salesperson"] or "Unassigned",
-                    "order_date": row["order_date"] or "",
-                    "quote_number": row["quote_number"] or row["order_number"] or "",
-                    "order_total": float(row["total"] or 0),
-                    "product_total": max(float(row["subtotal"] or 0) - float(row["discount"] or 0), 0.0),
-                    "tax": float(row["tax"] or 0),
-                    "installation": float(row["installation"] or 0),
-                    "first_payment_date": row["first_payment_date"] or "",
-                    "first_payment_amount": float(row["first_payment_amount"] or 0),
-                    "first_payment_paid": bool(row["first_payment_paid"]),
-                    "second_payment_enabled": bool(row["second_payment_enabled"]),
-                    "second_payment_date": row["second_payment_date"] or "",
-                    "second_payment_amount": float(row["second_payment_amount"] or 0),
-                    "second_payment_paid": bool(row["second_payment_paid"]),
-                    "paid_total": (float(row["first_payment_amount"] or 0) if row["first_payment_paid"] else 0.0) + (float(row["second_payment_amount"] or 0) if row["second_payment_enabled"] and row["second_payment_paid"] else 0.0),
-                    "balance": max(float(row["total"] or 0) - ((float(row["first_payment_amount"] or 0) if row["first_payment_paid"] else 0.0) + (float(row["second_payment_amount"] or 0) if row["second_payment_enabled"] and row["second_payment_paid"] else 0.0)), 0.0),
+                    "sales": sales_name,
+                    "order_date": finance_order_date(row),
+                    "quote_number": row_value(row, "quote_number") or row_value(row, "order_number") or "",
+                    "order_total": order_total,
+                    "product_total": max(float(row_value(row, "subtotal", 0) or 0) - float(row_value(row, "discount", 0) or 0), 0.0),
+                    "tax": float(row_value(row, "tax", 0) or 0),
+                    "installation": float(row_value(row, "installation", 0) or 0),
+                    "first_payment_date": str(row_value(row, "first_payment_date", "") or "")[:10],
+                    "first_payment_amount": first_amount,
+                    "first_payment_paid": first_paid,
+                    "second_payment_enabled": second_enabled,
+                    "second_payment_date": str(row_value(row, "second_payment_date", "") or "")[:10],
+                    "second_payment_amount": second_amount,
+                    "second_payment_paid": second_paid,
+                    "paid_total": paid_total,
+                    "balance": max(order_total - paid_total, 0.0),
                 }
             )
         return records
@@ -4075,6 +4106,46 @@ def save_customer(customer_id: int | None, data: dict[str, Any]) -> int:
         return int(cursor.lastrowid)
 
 
+def ensure_customer_order_from_status(customer_id: int, customer: sqlite3.Row | dict[str, Any], order_day: date) -> None:
+    if latest_customer_order(customer_id):
+        return
+    wishlist = parse_wishlist(row_value(customer, "wishlist", "[]"))
+    ordered_items = ordered_wishlist_items(wishlist)
+    summary = order_summary_from_quote(latest_customer_quote(customer_id), wishlist)
+    order_total = float(summary.get("total") or row_value(customer, "budget", 0) or 0)
+    if order_total <= 0 and ordered_items:
+        summary = order_summary_from_ordered_products(ordered_items)
+        order_total = float(summary.get("total") or 0)
+    if order_total <= 0:
+        return
+    schedule = payment_schedule_values(customer, order_total)
+    save_customer_order(
+        customer_id,
+        {
+            "order_date": order_day.isoformat(),
+            "customer_id": customer_id,
+            "customer_name": row_value(customer, "name", ""),
+            "salesperson": row_value(customer, "assigned_to") or default_customer_owner(),
+            "items": ordered_items,
+            "quote_number": summary.get("quote_number") or "",
+            "subtotal": float(summary.get("subtotal") or 0),
+            "discount": float(summary.get("discount") or 0),
+            "tax": float(summary.get("tax") or 0),
+            "tax_rate": float(summary.get("tax_rate") or 0),
+            "installation_fee": float(summary.get("installation") or 0),
+            "shipping_fee": float(summary.get("shipping") or 0),
+            "total": order_total,
+            "first_payment_date": schedule["first_date"],
+            "first_payment_amount": float(schedule["first_amount"]),
+            "first_payment_paid": bool(schedule["first_paid"]),
+            "second_payment_enabled": bool(schedule["second_enabled"]),
+            "second_payment_date": schedule["second_date"],
+            "second_payment_amount": float(schedule["second_amount"]),
+            "second_payment_paid": bool(schedule["second_paid"]),
+        },
+    )
+
+
 def update_customer_status(
     customer_id: int,
     status: str,
@@ -4133,6 +4204,8 @@ def update_customer_status(
                 [*updates.values(), customer_id],
             )
     add_customer_timeline_event(customer_id, date.today(), title, notes)
+    if status == "Ordered" and existing is not None:
+        ensure_customer_order_from_status(customer_id, existing, order_date or date.today())
     if inventory_messages:
         add_customer_timeline_event(
             customer_id,
