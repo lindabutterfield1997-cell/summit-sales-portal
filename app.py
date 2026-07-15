@@ -287,10 +287,12 @@ def init_db() -> None:
                 first_payment_date TEXT,
                 first_payment_amount REAL DEFAULT 0,
                 first_payment_paid INTEGER DEFAULT 0,
+                first_payment_method TEXT,
                 second_payment_enabled INTEGER DEFAULT 1,
                 second_payment_date TEXT,
                 second_payment_amount REAL DEFAULT 0,
                 second_payment_paid INTEGER DEFAULT 0,
+                second_payment_method TEXT,
                 install_followup_date TEXT,
                 install_status TEXT,
                 lost_date TEXT,
@@ -333,8 +335,10 @@ def init_db() -> None:
                 conn.execute(f"ALTER TABLE customers ADD COLUMN {column} {column_type}")
         payment_columns = {
             "first_payment_paid": "INTEGER DEFAULT 0",
+            "first_payment_method": "TEXT",
             "second_payment_enabled": "INTEGER DEFAULT 1",
             "second_payment_paid": "INTEGER DEFAULT 0",
+            "second_payment_method": "TEXT",
         }
         existing_columns = {
             row[1] for row in conn.execute("PRAGMA table_info(customers)").fetchall()
@@ -371,10 +375,12 @@ def init_db() -> None:
                 first_payment_date TEXT,
                 first_payment_amount REAL DEFAULT 0,
                 first_payment_paid INTEGER DEFAULT 0,
+                first_payment_method TEXT,
                 second_payment_enabled INTEGER DEFAULT 1,
                 second_payment_date TEXT,
                 second_payment_amount REAL DEFAULT 0,
                 second_payment_paid INTEGER DEFAULT 0,
+                second_payment_method TEXT,
                 payload TEXT NOT NULL,
                 FOREIGN KEY(customer_id) REFERENCES customers(id)
             )
@@ -419,6 +425,17 @@ def init_db() -> None:
             )
             """
         )
+        order_columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(customer_orders)").fetchall()
+        }
+        order_payment_columns = {
+            "first_payment_method": "TEXT",
+            "second_payment_method": "TEXT",
+        }
+        for column, column_type in order_payment_columns.items():
+            if column not in order_columns:
+                conn.execute(f"ALTER TABLE customer_orders ADD COLUMN {column} {column_type}")
+
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS service_requests (
@@ -1363,6 +1380,9 @@ DAMAGE_REASONS = (
 )
 
 
+PAYMENT_METHODS = ("", "Cash", "Zelle", "PayPal", "Debit card", "Credit card", "Check")
+
+
 def today_iso() -> str:
     return date.today().isoformat()
 
@@ -1438,6 +1458,8 @@ CUSTOMER_DEFAULTS: dict[str, Any] = {
     "second_payment_date": "",
     "second_payment_amount": 0.0,
     "second_payment_paid": 0,
+    "first_payment_method": "",
+    "second_payment_method": "",
     "install_followup_date": "",
     "install_status": "",
     "lost_date": "",
@@ -1487,10 +1509,12 @@ SUPABASE_CUSTOMER_COLUMNS = {
     "first_payment_date",
     "first_payment_amount",
     "first_payment_paid",
+    "first_payment_method",
     "second_payment_enabled",
     "second_payment_date",
     "second_payment_amount",
     "second_payment_paid",
+    "second_payment_method",
     "install_followup_date",
     "install_status",
     "lost_date",
@@ -1528,10 +1552,12 @@ SUPABASE_ORDER_COLUMNS = {
     "first_payment_date",
     "first_payment_amount",
     "first_payment_paid",
+    "first_payment_method",
     "second_payment_enabled",
     "second_payment_date",
     "second_payment_amount",
     "second_payment_paid",
+    "second_payment_method",
     "payload",
 }
 SUPABASE_ORDER_DATE_COLUMNS = {
@@ -2523,10 +2549,12 @@ def prepared_order_row(customer_id: int, order: dict[str, Any]) -> dict[str, Any
     row["first_payment_date"] = str(row.get("first_payment_date") or "")
     row["first_payment_amount"] = float(row.get("first_payment_amount") or 0)
     row["first_payment_paid"] = int(bool(row.get("first_payment_paid", False)))
+    row["first_payment_method"] = str(row.get("first_payment_method") or "")
     row["second_payment_enabled"] = int(bool(row.get("second_payment_enabled", True)))
     row["second_payment_date"] = str(row.get("second_payment_date") or "") if row["second_payment_enabled"] else ""
     row["second_payment_amount"] = float(row.get("second_payment_amount") or 0) if row["second_payment_enabled"] else 0.0
     row["second_payment_paid"] = int(bool(row.get("second_payment_paid", False))) if row["second_payment_enabled"] else 0
+    row["second_payment_method"] = str(row.get("second_payment_method") or "") if row["second_payment_enabled"] else ""
     row["payload"] = dict(order)
     row["payload"].update(
         {
@@ -2543,10 +2571,12 @@ def prepared_order_row(customer_id: int, order: dict[str, Any]) -> dict[str, Any
             "first_payment_date": row["first_payment_date"],
             "first_payment_amount": row["first_payment_amount"],
             "first_payment_paid": bool(row["first_payment_paid"]),
+            "first_payment_method": row["first_payment_method"],
             "second_payment_enabled": bool(row["second_payment_enabled"]),
             "second_payment_date": row["second_payment_date"],
             "second_payment_amount": row["second_payment_amount"],
             "second_payment_paid": bool(row["second_payment_paid"]),
+            "second_payment_method": row["second_payment_method"],
         }
     )
     return row
@@ -2593,10 +2623,12 @@ def sqlite_order_insert_values(order_row: dict[str, Any]) -> tuple[Any, ...]:
         str(order_row.get("first_payment_date") or ""),
         float(order_row.get("first_payment_amount") or 0),
         int(bool(order_row.get("first_payment_paid", False))),
+        str(order_row.get("first_payment_method") or ""),
         int(bool(order_row.get("second_payment_enabled", True))),
         str(order_row.get("second_payment_date") or ""),
         float(order_row.get("second_payment_amount") or 0),
         int(bool(order_row.get("second_payment_paid", False))),
+        str(order_row.get("second_payment_method") or ""),
         payload_text,
     )
 
@@ -2609,9 +2641,9 @@ def mirror_order_to_sqlite(order_row: dict[str, Any]) -> int:
             INSERT INTO customer_orders (
                 id, customer_id, order_number, quote_number, created_at, order_date, salesperson,
                 subtotal, discount, tax, installation, shipping, total,
-                first_payment_date, first_payment_amount, first_payment_paid,
-                second_payment_enabled, second_payment_date, second_payment_amount, second_payment_paid, payload
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                first_payment_date, first_payment_amount, first_payment_paid, first_payment_method,
+                second_payment_enabled, second_payment_date, second_payment_amount, second_payment_paid, second_payment_method, payload
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(order_number) DO UPDATE SET
                 customer_id = excluded.customer_id,
                 quote_number = excluded.quote_number,
@@ -2627,10 +2659,12 @@ def mirror_order_to_sqlite(order_row: dict[str, Any]) -> int:
                 first_payment_date = excluded.first_payment_date,
                 first_payment_amount = excluded.first_payment_amount,
                 first_payment_paid = excluded.first_payment_paid,
+                first_payment_method = excluded.first_payment_method,
                 second_payment_enabled = excluded.second_payment_enabled,
                 second_payment_date = excluded.second_payment_date,
                 second_payment_amount = excluded.second_payment_amount,
                 second_payment_paid = excluded.second_payment_paid,
+                second_payment_method = excluded.second_payment_method,
                 payload = excluded.payload
             """,
             values,
@@ -2733,10 +2767,12 @@ def update_latest_customer_order_payment_schedule(
     first_payment_date_value: str,
     first_payment_amount: float,
     first_payment_paid: bool,
+    first_payment_method: str,
     second_payment_enabled: bool,
     second_payment_date_value: str,
     second_payment_amount: float,
     second_payment_paid: bool,
+    second_payment_method: str,
 ) -> None:
     rows = sqlite_customer_order_rows(customer_id)
     if not rows:
@@ -2746,10 +2782,12 @@ def update_latest_customer_order_payment_schedule(
         "first_payment_date": first_payment_date_value,
         "first_payment_amount": max(float(first_payment_amount), 0.0),
         "first_payment_paid": int(bool(first_payment_paid)),
+        "first_payment_method": first_payment_method.strip(),
         "second_payment_enabled": int(bool(second_payment_enabled)),
         "second_payment_date": second_payment_date_value if second_payment_enabled else "",
         "second_payment_amount": max(float(second_payment_amount), 0.0) if second_payment_enabled else 0.0,
         "second_payment_paid": int(bool(second_payment_paid)) if second_payment_enabled else 0,
+        "second_payment_method": second_payment_method.strip() if second_payment_enabled else "",
     }
     payload = order_payload(latest)
     payload.update(
@@ -2757,10 +2795,12 @@ def update_latest_customer_order_payment_schedule(
             "first_payment_date": updates["first_payment_date"],
             "first_payment_amount": updates["first_payment_amount"],
             "first_payment_paid": bool(updates["first_payment_paid"]),
+            "first_payment_method": updates["first_payment_method"],
             "second_payment_enabled": bool(updates["second_payment_enabled"]),
             "second_payment_date": updates["second_payment_date"],
             "second_payment_amount": updates["second_payment_amount"],
             "second_payment_paid": bool(updates["second_payment_paid"]),
+            "second_payment_method": updates["second_payment_method"],
         }
     )
     updates["payload"] = json.dumps(payload, ensure_ascii=False)
@@ -3063,6 +3103,13 @@ def render_payment_schedule_editor(customer: sqlite3.Row, order_total: float) ->
                 value=bool(schedule["first_paid"]),
                 key=f"first-payment-paid-{customer_id}",
             )
+            first_method = st.selectbox(
+                "First payment method / 第一笔付款方式",
+                PAYMENT_METHODS,
+                index=option_index(PAYMENT_METHODS, row_value(customer, "first_payment_method")),
+                key=f"first-payment-method-{customer_id}",
+                format_func=lambda value: value or "Not set",
+            )
         with second_col:
             second_enabled = st.checkbox(
                 "Use second payment / 需要第二笔付款",
@@ -3087,10 +3134,18 @@ def render_payment_schedule_editor(customer: sqlite3.Row, order_total: float) ->
                     value=bool(schedule["second_paid"]),
                     key=f"second-payment-paid-{customer_id}",
                 )
+                second_method = st.selectbox(
+                    "Second payment method / 第二笔付款方式",
+                    PAYMENT_METHODS,
+                    index=option_index(PAYMENT_METHODS, row_value(customer, "second_payment_method")),
+                    key=f"second-payment-method-{customer_id}",
+                    format_func=lambda value: value or "Not set",
+                )
             else:
                 second_date = date_from_iso(schedule["second_date"], date.today())
                 second_amount = float(schedule["second_amount"])
                 second_paid = bool(schedule["second_paid"])
+                second_method = str(row_value(customer, "second_payment_method", "") or "")
 
         paid_total = (float(first_amount) if first_paid else 0.0) + (float(second_amount) if second_enabled and second_paid else 0.0)
         balance_due = max(float(order_total) - paid_total, 0.0)
@@ -3105,10 +3160,12 @@ def render_payment_schedule_editor(customer: sqlite3.Row, order_total: float) ->
                 first_date,
                 float(first_amount),
                 bool(first_paid),
+                str(first_method),
                 bool(second_enabled),
                 second_date,
                 float(second_amount),
                 bool(second_paid),
+                str(second_method),
             )
             st.success("Payment schedule updated.")
             st.rerun()
@@ -4391,10 +4448,12 @@ def update_customer_payment_schedule(
     first_payment_date: date,
     first_payment_amount: float,
     first_payment_paid: bool,
+    first_payment_method: str,
     second_payment_enabled: bool,
     second_payment_date: date,
     second_payment_amount: float,
     second_payment_paid: bool,
+    second_payment_method: str,
 ) -> None:
     now = datetime.now().isoformat(timespec="seconds")
     first_amount = max(float(first_payment_amount), 0.0)
@@ -4406,10 +4465,12 @@ def update_customer_payment_schedule(
         "first_payment_date": first_payment_date.isoformat(),
         "first_payment_amount": first_amount,
         "first_payment_paid": int(first_payment_paid),
+        "first_payment_method": first_payment_method.strip(),
         "second_payment_enabled": int(use_second_payment),
         "second_payment_date": second_date_value,
         "second_payment_amount": second_amount,
         "second_payment_paid": int(second_paid_value),
+        "second_payment_method": second_payment_method.strip() if use_second_payment else "",
         "updated_at": now,
     }
     if supabase_customers_enabled():
@@ -4437,6 +4498,7 @@ def update_customer_payment_schedule(
             first_payment_date.isoformat(),
             first_amount,
             bool(first_payment_paid),
+            first_payment_method.strip(),
             use_second_payment,
             second_date_value,
             second_amount,
@@ -7094,10 +7156,12 @@ def create_order_from_cart(
     first_payment_date: date,
     first_payment_amount: float,
     first_payment_paid: bool,
+    first_payment_method: str,
     second_payment_enabled: bool,
     second_payment_date: date,
     second_payment_amount: float,
     second_payment_paid: bool,
+    second_payment_method: str,
     adjustments: dict[str, Any],
 ) -> str:
     selected_items = [dict(item) for item in included_cart_items()]
@@ -7134,10 +7198,12 @@ def create_order_from_cart(
         "first_payment_date": first_payment_date.isoformat(),
         "first_payment_amount": max(float(first_payment_amount), 0.0),
         "first_payment_paid": bool(first_payment_paid),
+        "first_payment_method": first_payment_method.strip(),
         "second_payment_enabled": bool(second_payment_enabled),
         "second_payment_date": second_payment_date.isoformat() if second_payment_enabled else "",
         "second_payment_amount": max(float(second_payment_amount), 0.0) if second_payment_enabled else 0.0,
         "second_payment_paid": bool(second_payment_paid) if second_payment_enabled else False,
+        "second_payment_method": second_payment_method.strip() if second_payment_enabled else "",
     }
     save_customer_order(customer_id, order)
     updates = {
@@ -7152,10 +7218,12 @@ def create_order_from_cart(
         "first_payment_date": first_payment_date.isoformat(),
         "first_payment_amount": max(float(first_payment_amount), 0.0),
         "first_payment_paid": int(first_payment_paid),
+        "first_payment_method": first_payment_method.strip(),
         "second_payment_enabled": int(second_payment_enabled),
         "second_payment_date": second_payment_date.isoformat() if second_payment_enabled else "",
         "second_payment_amount": max(float(second_payment_amount), 0.0) if second_payment_enabled else 0.0,
         "second_payment_paid": int(second_payment_paid) if second_payment_enabled else 0,
+        "second_payment_method": second_payment_method.strip() if second_payment_enabled else "",
         "on_hold": 0,
     }
     if supabase_customers_enabled():
@@ -7210,6 +7278,13 @@ def order_checkout_page() -> None:
                 first_payment_date = st.date_input("First payment date", value=date.today())
                 first_payment_amount = st.number_input("First payment amount ($)", min_value=0.0, value=round(total, 2), step=100.0)
                 first_payment_paid = st.checkbox("First payment paid / 第一笔已付款", value=False)
+                first_payment_method = st.selectbox(
+                    "First payment method / 第一笔付款方式",
+                    PAYMENT_METHODS,
+                    index=0,
+                    format_func=lambda value: value or "Not set",
+                    key="checkout-first-payment-method",
+                )
             with pay_cols[1]:
                 second_payment_enabled = st.checkbox("Use second payment / 需要第二笔付款", value=False)
                 if second_payment_enabled:
@@ -7217,10 +7292,18 @@ def order_checkout_page() -> None:
                     second_default = max(total - first_payment_amount, 0.0)
                     second_payment_amount = st.number_input("Second payment amount ($)", min_value=0.0, value=round(second_default, 2), step=100.0)
                     second_payment_paid = st.checkbox("Second payment paid / 第二笔已付款", value=False)
+                    second_payment_method = st.selectbox(
+                        "Second payment method / 第二笔付款方式",
+                        PAYMENT_METHODS,
+                        index=0,
+                        format_func=lambda value: value or "Not set",
+                        key="checkout-second-payment-method",
+                    )
                 else:
                     second_payment_date = date.today()
                     second_payment_amount = 0.0
                     second_payment_paid = False
+                    second_payment_method = ""
             paid_preview = (first_payment_amount if first_payment_paid else 0.0) + (second_payment_amount if second_payment_enabled and second_payment_paid else 0.0)
             st.caption(f"Order total: {money(total)} · Product amount after discount: {money(product_total)} · Paid now: {money(paid_preview)} · Balance: {money(max(total - paid_preview, 0.0))}")
             submitted = st.button("Check out selected items", type="primary", width="stretch", key="submit-order-checkout")
@@ -7231,10 +7314,12 @@ def order_checkout_page() -> None:
                     first_payment_date,
                     float(first_payment_amount),
                     bool(first_payment_paid),
+                    str(first_payment_method),
                     bool(second_payment_enabled),
                     second_payment_date,
                     float(second_payment_amount),
                     bool(second_payment_paid),
+                    str(second_payment_method),
                     adjustments,
                 )
                 set_active_customer(int(selected_customer_id), load_cart=False)
