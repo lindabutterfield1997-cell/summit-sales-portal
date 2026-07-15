@@ -1288,13 +1288,21 @@ FOLLOWUP_STAGES = (
 )
 
 INSTALL_STATUSES = (
-    "Not scheduled",
-    "Measurement needed",
-    "Production",
-    "Ready to install",
-    "Installed",
-    "After-sales follow-up",
+    "Customer picked up",
+    "In production",
+    "In delivery",
+    "Waiting for inspection",
+    "Waiting for installation",
+    "Completed",
 )
+LEGACY_INSTALL_STATUS_MAP = {
+    "Not scheduled": "Waiting for installation",
+    "Measurement needed": "Waiting for inspection",
+    "Production": "In production",
+    "Ready to install": "Waiting for installation",
+    "Installed": "Completed",
+    "After-sales follow-up": "Completed",
+}
 
 LOST_REASONS = (
     "Price",
@@ -3317,6 +3325,28 @@ def customer_payment_total(row: sqlite3.Row) -> float:
     )
 
 
+def normalized_install_status(value: str | None) -> str:
+    clean = str(value or "").strip()
+    return LEGACY_INSTALL_STATUS_MAP.get(clean, clean if clean in INSTALL_STATUSES else INSTALL_STATUSES[4])
+
+
+def update_customer_install_status(customer_id: int, install_status: str) -> None:
+    normalized = normalized_install_status(install_status)
+    now = datetime.now().isoformat(timespec="seconds")
+    updates = {"install_status": normalized, "updated_at": now}
+    if supabase_customers_enabled():
+        try:
+            supabase_update_customer(customer_id, updates)
+            mirror_customer_to_sqlite(customer_id, {**updates, "id": customer_id})
+        except Exception as exc:
+            st.error(f"Order progress could not be saved to Supabase: {exc}")
+            raise
+    else:
+        with db_connect() as conn:
+            conn.execute("UPDATE customers SET install_status = ?, updated_at = ? WHERE id = ?", (normalized, now, customer_id))
+    add_customer_timeline_event(customer_id, date.today(), "Order progress updated", f"Order progress changed to {normalized}.")
+
+
 def period_bounds(period: str, anchor: date) -> tuple[date, date]:
     if period == "Month":
         start = anchor.replace(day=1)
@@ -4671,7 +4701,7 @@ def customer_title_detail(row: sqlite3.Row) -> str:
     if row["status"] == "Following":
         return row["followup_stage"] or "New lead"
     if row["status"] == "Ordered":
-        return row["install_status"] or "Ordered"
+        return normalized_install_status(row_value(row, "install_status")) or "Ordered"
     if row["status"] == "Lost":
         return row["lost_reason"] or "Lost reason pending"
     return STATUS_LABELS.get(row["status"], row["status"])
@@ -5023,7 +5053,7 @@ def customer_summary_metrics(rows: list[sqlite3.Row]) -> None:
     install_due = [
         row for row in ordered
         if row["install_followup_date"] and date_from_iso(row["install_followup_date"]) <= date.today()
-        and row["install_status"] != "Installed"
+        and normalized_install_status(row_value(row, "install_status")) != "Completed"
     ]
     c1, c2, c3, c4, c5 = st.columns(5)
     c1.metric("Following", len(following))
@@ -5256,6 +5286,28 @@ def customer_card(row: sqlite3.Row) -> None:
                 st.success("Customer status updated.")
                 st.rerun()
 
+        if row["status"] == "Ordered":
+            st.markdown("**Order progress / 订单进度**")
+            progress_col, progress_btn_col = st.columns([1.8, 0.8], vertical_alignment="bottom")
+            current_progress = normalized_install_status(row_value(row, "install_status"))
+            with progress_col:
+                selected_progress = st.selectbox(
+                    "Order progress",
+                    INSTALL_STATUSES,
+                    index=option_index(INSTALL_STATUSES, current_progress),
+                    key=f"order-progress-{row['id']}",
+                )
+            with progress_btn_col:
+                if st.button(
+                    "Save progress",
+                    key=f"save-order-progress-{row['id']}",
+                    width="stretch",
+                    disabled=selected_progress == current_progress,
+                ):
+                    update_customer_install_status(int(row["id"]), selected_progress)
+                    st.success("Order progress updated.")
+                    st.rerun()
+
         wishlist = parse_wishlist(row["wishlist"])
         latest_order_row = latest_customer_order(int(row["id"])) if row["status"] == "Ordered" else None
         latest_order_payload = order_payload(latest_order_row) if latest_order_row else {}
@@ -5418,7 +5470,7 @@ def customers_page() -> None:
             row for row in rows
             if row["status"] == "Ordered" and row["install_followup_date"]
             and date_from_iso(row["install_followup_date"]) <= date.today()
-            and row["install_status"] != "Installed"
+            and normalized_install_status(row_value(row, "install_status")) != "Completed"
         ]
         if not rows:
             st.markdown('<div class="empty">No customers yet. Add your first customer from the Add / Edit tab.</div>', unsafe_allow_html=True)
@@ -7093,7 +7145,7 @@ def create_order_from_cart(
         "followup_stage": "Quoted",
         "products_interest": product_names,
         "budget": total,
-        "install_status": row_value(customer, "install_status") or "Not scheduled",
+        "install_status": normalized_install_status(row_value(customer, "install_status")),
         "install_followup_date": install_followup_date,
         "first_payment_date": first_payment_date.isoformat(),
         "first_payment_amount": max(float(first_payment_amount), 0.0),
