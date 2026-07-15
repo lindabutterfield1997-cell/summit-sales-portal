@@ -2697,6 +2697,15 @@ def customer_order_rows(customer_id: int | None = None) -> list[sqlite3.Row]:
     return sqlite_customer_order_rows(customer_id)
 
 
+def delete_customer_order(order_row: sqlite3.Row) -> None:
+    order_number_value = str(order_row["order_number"] or "").strip()
+    if supabase_orders_enabled() and order_number_value:
+        query = parse.urlencode({"order_number": f"eq.{order_number_value}"})
+        supabase_request("DELETE", "customer_orders", query=query, prefer="return=minimal")
+    with db_connect() as conn:
+        conn.execute("DELETE FROM customer_orders WHERE id = ?", (int(order_row["id"]),))
+
+
 def order_payload(row: sqlite3.Row) -> dict[str, Any]:
     try:
         data = json.loads(row["payload"] or "{}")
@@ -3003,6 +3012,21 @@ def render_customer_orders(customer_id: int) -> None:
                     f"{float(item.get('width') or 0):.1f}\" W × {float(item.get('height') or 0):.1f}\" H · {area_sqft:.2f} sq ft · {item.get('direction', '')}{color_note}  \n"
                     f"Line total: {money(float(item.get('line_total') or 0))}"
                 )
+            st.divider()
+            confirm_delete = st.checkbox(
+                "I understand this order will be deleted / 确认删除这个订单",
+                key=f"confirm-delete-order-{order_row['id']}",
+            )
+            if st.button(
+                "Delete this order / 删除这个订单",
+                type="secondary",
+                disabled=not confirm_delete,
+                key=f"delete-order-{order_row['id']}",
+                width="stretch",
+            ):
+                delete_customer_order(order_row)
+                st.success("Order deleted.")
+                st.rerun()
 
 
 def render_payment_schedule_editor(customer: sqlite3.Row, order_total: float) -> None:
