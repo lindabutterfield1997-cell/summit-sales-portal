@@ -119,7 +119,7 @@
     "id": "AC-400",
     "section": "Accessories",
     "category": "Accessories",
-    "name": "手风琴纱窗",
+    "name": "Accordion Screen",
     "subtitle": "Accordion pleated screen",
     "description": "Accordion pleated screen accessory for door and window openings, designed for smooth side-to-side operation and compact stacking.",
     "base_rate": 15.0,
@@ -145,7 +145,7 @@
       "uploads/ac-400-accordion-screen-3x2.webp"
     ],
     "active": true,
-    "updated_at": "2026-07-15T12:15:00",
+    "updated_at": "2026-07-15T12:20:00",
     "color_options": [
       "Black",
       "White",
