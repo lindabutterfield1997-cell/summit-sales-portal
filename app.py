@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import csv
 import hashlib
+import hmac
 import html
 import io
 import json
@@ -48,6 +49,7 @@ PRODUCT_IMAGE_SIZE = (1500, 1000)
 OUTPUT_DIR = APP_DIR / "output" / "pdf"
 DB_PATH = APP_DIR / "quotes.db"
 DB_TIMEOUT_SECONDS = 30
+AUTH_STORAGE_KEY = "frameflow_employee_daily_auth_v1"
 
 
 def db_connect(*, isolation_level: str | None = "DEFERRED") -> sqlite3.Connection:
@@ -1129,7 +1131,106 @@ def valid_employee_login(username: str, password: str) -> bool:
     return False
 
 
+def daily_auth_secret() -> str:
+    configured = secret_or_env("DAILY_AUTH_SECRET")
+    if configured:
+        return configured
+    credentials_blob = json.dumps(employee_credentials(), sort_keys=True)
+    return hashlib.sha256(f"{credentials_blob}|{admin_password()}|{COMPANY_NAME}".encode("utf-8")).hexdigest()
+
+
+def daily_auth_token(username: str, auth_day: str | None = None) -> str:
+    normalized = canonical_employee_name(username)
+    day_value = auth_day or today_iso()
+    message = f"{day_value}|{normalized}".encode("utf-8")
+    return hmac.new(daily_auth_secret().encode("utf-8"), message, hashlib.sha256).hexdigest()
+
+
+def valid_daily_auth_token(username: str, token: str, auth_day: str | None = None) -> bool:
+    normalized = canonical_employee_name(username)
+    if not normalized or not token:
+        return False
+    if normalized not in {canonical_employee_name(name) for name in employee_credentials()}:
+        return False
+    expected = daily_auth_token(normalized, auth_day or today_iso())
+    return secrets.compare_digest(str(token), expected)
+
+
+def persist_daily_login_script(username: str) -> None:
+    normalized = canonical_employee_name(username)
+    if not normalized:
+        return
+    payload = {"user": normalized, "day": today_iso(), "token": daily_auth_token(normalized)}
+    components.html(
+        f"""
+        <script>
+        (() => {{
+          try {{
+            window.parent.localStorage.setItem({json.dumps(AUTH_STORAGE_KEY)}, {json.dumps(json.dumps(payload))});
+          }} catch (err) {{}}
+        }})();
+        </script>
+        """,
+        height=0,
+        width=0,
+    )
+
+
+def restore_daily_login_script() -> None:
+    components.html(
+        f"""
+        <script>
+        (() => {{
+          try {{
+            const key = {json.dumps(AUTH_STORAGE_KEY)};
+            const raw = window.parent.localStorage.getItem(key);
+            if (!raw) return;
+            const saved = JSON.parse(raw);
+            const today = new Date().toISOString().slice(0, 10);
+            if (!saved || saved.day !== today || !saved.user || !saved.token) {{
+              window.parent.localStorage.removeItem(key);
+              return;
+            }}
+            const url = new URL(window.parent.location.href);
+            if (url.searchParams.get('auth_user') === saved.user && url.searchParams.get('auth_token') === saved.token) return;
+            url.searchParams.set('auth_user', saved.user);
+            url.searchParams.set('auth_token', saved.token);
+            window.parent.location.replace(url.toString());
+          }} catch (err) {{}}
+        }})();
+        </script>
+        """,
+        height=0,
+        width=0,
+    )
+
+
+def clear_daily_login_script() -> None:
+    components.html(
+        f"""
+        <script>
+        (() => {{
+          try {{ window.parent.localStorage.removeItem({json.dumps(AUTH_STORAGE_KEY)}); }} catch (err) {{}}
+        }})();
+        </script>
+        """,
+        height=0,
+        width=0,
+    )
+
+
+def authenticate_from_daily_query() -> None:
+    if st.session_state.get("employee_authenticated"):
+        return
+    username = query_param_value("auth_user")
+    token = query_param_value("auth_token")
+    if valid_daily_auth_token(username, token):
+        st.session_state.employee_authenticated = True
+        st.session_state.employee_name = canonical_employee_name(username)
+
+
 def employee_login_page() -> None:
+    restore_daily_login_script()
     st.markdown(
         """
         <div class="hero">
@@ -1150,10 +1251,17 @@ def employee_login_page() -> None:
             login = st.form_submit_button("Sign in", type="primary", width="stretch")
             if login:
                 if valid_employee_login(username, password):
+                    normalized_username = canonical_employee_name(username)
                     st.session_state.employee_authenticated = True
-                    st.session_state.employee_name = canonical_employee_name(username)
+                    st.session_state.employee_name = normalized_username
                     st.session_state.active_customer_id = None
                     st.session_state.cart = []
+                    persist_daily_login_script(normalized_username)
+                    try:
+                        st.query_params["auth_user"] = normalized_username
+                        st.query_params["auth_token"] = daily_auth_token(normalized_username)
+                    except Exception:
+                        pass
                     st.rerun()
                 else:
                     st.error("Incorrect username or password.")
@@ -6832,6 +6940,7 @@ def top_nav() -> None:
             st.rerun()
     with account:
         if st.button("Sign out", type="tertiary", width="stretch"):
+            clear_daily_login_script()
             st.session_state.employee_authenticated = False
             st.session_state.employee_name = ""
             st.session_state.admin_authenticated = False
@@ -6840,6 +6949,7 @@ def top_nav() -> None:
             st.session_state.active_customer_id = None
             st.session_state.customer_editor_id = None
             st.session_state.inline_customer_editor_id = None
+            clear_customer_query_params()
             st.session_state.service_customer_id = None
             st.session_state.cart = []
             st.rerun()
@@ -8918,10 +9028,12 @@ def about_page() -> None:
 def main() -> None:
     css()
     init_state()
+    authenticate_from_daily_query()
     if not st.session_state.employee_authenticated:
         employee_login_page()
         st.markdown('<div class="footer">FRAMEFLOW · EMPLOYEE ACCESS REQUIRED</div>', unsafe_allow_html=True)
         return
+    persist_daily_login_script(current_employee_name())
     apply_query_params_to_state()
     # Phone numbers are formatted on save/quote generation.
     # The live browser mask is disabled because it can interrupt Streamlit text input.
