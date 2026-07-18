@@ -3739,10 +3739,8 @@ def finance_csv(records: list[dict[str, Any]]) -> str:
             "order_date",
             "quote_number",
             "product_total_pre_tax",
-            "sales_tax",
             "shipping",
             "installation",
-            "invoice_total_after_tax",
             "paid_total",
             "balance",
             "first_payment_date",
@@ -3757,10 +3755,8 @@ def finance_csv(records: list[dict[str, Any]]) -> str:
     for record in records:
         row = {key: record.get(key, "") for key in writer.fieldnames}
         row["product_total_pre_tax"] = record.get("product_total", 0.0)
-        row["sales_tax"] = record.get("tax", 0.0)
         row["shipping"] = record.get("shipping", 0.0)
         row["installation"] = record.get("installation", 0.0)
-        row["invoice_total_after_tax"] = record.get("order_total", 0.0)
         writer.writerow(row)
     return output.getvalue()
 
@@ -5878,19 +5874,15 @@ def finance_page() -> None:
     ]
 
     product_sales_amount = sum(float(record["product_total"]) for record in period_orders)
-    sales_tax_amount = sum(float(record["tax"]) for record in period_orders)
-    invoice_total_amount = sum(float(record["order_total"]) for record in period_orders)
     collected_amount = sum(payment_amount_in_period(record, start, end) for record in filtered)
     expected_second_amount = sum(float(record["second_payment_amount"]) for record in expected_second)
     open_balance = sum(float(record["balance"]) for record in filtered)
 
-    st.caption(f"Showing {display_date(start.isoformat())} to {display_date(end.isoformat())}. Sales performance uses product amount before sales tax. Customer receipts show invoice total after 7.75% sales tax.")
-    kpi1, kpi2, kpi3, kpi4, kpi5 = st.columns(5)
+    st.caption(f"Showing {display_date(start.isoformat())} to {display_date(end.isoformat())}. Sales performance uses product amount before sales tax.")
+    kpi1, kpi2, kpi3 = st.columns(3)
     kpi1.metric("Product sales pre-tax", money(product_sales_amount), f"{len(period_orders)} orders")
-    kpi2.metric("Sales tax", money(sales_tax_amount))
-    kpi3.metric("Invoice total", money(invoice_total_amount))
-    kpi4.metric("Collected in period", money(collected_amount))
-    kpi5.metric("Open A/R balance", money(open_balance), f"{len(overdue_payments)} overdue")
+    kpi2.metric("Collected in period", money(collected_amount))
+    kpi3.metric("Open A/R balance", money(open_balance), f"{len(overdue_payments)} overdue")
 
     contribution: dict[str, dict[str, float | int]] = {}
     for record in period_orders:
@@ -5950,10 +5942,8 @@ def finance_page() -> None:
                     "Salesperson": record["sales"],
                     "Order date": display_date(record["order_date"]),
                     "Product sales pre-tax": money(float(record["product_total"])),
-                    "Sales tax": money(float(record["tax"])),
                     "Shipping": money(float(record.get("shipping") or 0)),
                     "Installation": money(float(record["installation"])),
-                    "Invoice total after tax": money(float(record["order_total"])),
                     "Collected in period": money(payment_amount_in_period(record, start, end)),
                     "Paid total": money(float(record["paid_total"])),
                     "Open balance": money(float(record["balance"])),
@@ -5974,8 +5964,6 @@ def finance_page() -> None:
                 "Sales": record["sales"],
                 "Expected second payment": money(float(record["second_payment_amount"])),
                 "Product sales pre-tax": money(float(record["product_total"])),
-                "Sales tax": money(float(record["tax"])),
-                "Invoice total after tax": money(float(record["order_total"])),
                 "Balance": money(float(record["balance"])),
             }
             for record in sorted(expected_second, key=lambda item: item["second_payment_date"] or "")
@@ -5992,8 +5980,6 @@ def finance_page() -> None:
                 "Sales": record["sales"],
                 "Order date": display_date(record["order_date"]),
                 "Product sales pre-tax": money(float(record["product_total"])),
-                "Sales tax": money(float(record["tax"])),
-                "Invoice total after tax": money(float(record["order_total"])),
                 "Paid": money(float(record["paid_total"])),
                 "Balance": money(float(record["balance"])),
                 "Next due": display_date(record["second_payment_date"] if record["second_payment_enabled"] and not record["second_payment_paid"] else record["first_payment_date"]),
@@ -6015,10 +6001,8 @@ def finance_page() -> None:
                 "Order date": display_date(record["order_date"]),
                 "Quote": record["quote_number"] or "Customer record",
                 "Product sales pre-tax": money(float(record["product_total"])),
-                "Sales tax": money(float(record["tax"])),
                 "Shipping": money(float(record.get("shipping") or 0)),
                 "Installation": money(float(record["installation"])),
-                "Invoice total after tax": money(float(record["order_total"])),
                 "Paid total": money(float(record["paid_total"])),
                 "Balance": money(float(record["balance"])),
                 "First paid": "Yes" if record["first_payment_paid"] else "No",
