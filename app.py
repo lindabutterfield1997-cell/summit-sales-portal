@@ -195,6 +195,7 @@ def init_state() -> None:
         "admin_editor_id": None,
         "customer_editor_id": None,
         "inline_customer_editor_id": None,
+        "focus_customer_id": None,
         "inventory_editor_id": None,
         "service_customer_id": None,
         "service_editor_id": None,
@@ -5683,7 +5684,8 @@ def customer_card(row: sqlite3.Row) -> None:
     owner_title = f" ｜ {row_value(row, 'assigned_to') or 'Unassigned'}" if is_manager_user() else ""
     title = f"{row['name']}{city_title} ｜ {customer_title_detail(row)}{owner_title}"
     is_inline_editing = st.session_state.get("inline_customer_editor_id") == int(row["id"])
-    with st.expander(title, expanded=is_inline_editing):
+    is_focused = st.session_state.get("focus_customer_id") == int(row["id"])
+    with st.expander(title, expanded=is_inline_editing or is_focused):
         if is_manager_user():
             owner_options = customer_owner_options(row_value(row, "assigned_to"))
             owner_col, assign_col, save_owner_col = st.columns([1.1, 1.2, 0.7], vertical_alignment="bottom")
@@ -5936,8 +5938,25 @@ def customers_page() -> None:
         st.caption("Customer database: Supabase connected. New customers and customer edits should be saved to the backend database.")
     else:
         st.warning("Customer database is not connected to Supabase. Customers created now will be saved locally only and will not appear in the Supabase backend.")
-    search = st.text_input("Search customers", placeholder="Search name, email, phone, address or interested products...")
-    rows = customer_rows(search=search.strip())
+    focused_customer_id = st.session_state.get("focus_customer_id")
+    if focused_customer_id:
+        focused_customer = customer_by_id(int(focused_customer_id))
+        if focused_customer:
+            left, right = st.columns([3, 1], vertical_alignment="center")
+            left.info(f"Showing customer from Finance: {row_value(focused_customer, 'name', 'Customer')}.")
+            if right.button("Show all customers", width="stretch"):
+                st.session_state.focus_customer_id = None
+                st.rerun()
+            customer_summary_metrics([focused_customer])
+            st.write("")
+            customer_card(focused_customer)
+            return
+        else:
+            st.session_state.focus_customer_id = None
+            rows = customer_rows()
+    else:
+        search = st.text_input("Search customers", placeholder="Search name, email, phone, address or interested products...")
+        rows = customer_rows(search=search.strip())
     customer_summary_metrics(rows)
     st.write("")
 
@@ -6017,6 +6036,51 @@ def customers_page() -> None:
         )
         st.session_state.customer_editor_id = selected_id or None
         customer_editor(customer_by_id(selected_id) if selected_id else None, form_key="customer-editor-tab")
+
+
+def open_customer_from_finance(customer_id: int) -> None:
+    st.session_state.focus_customer_id = int(customer_id)
+    st.session_state.inline_customer_editor_id = None
+    st.session_state.customer_editor_id = None
+    st.session_state.page = "Customers"
+    st.rerun()
+
+
+def finance_customer_detail_table(rows: list[dict[str, Any]], empty_message: str) -> None:
+    if not rows:
+        st.markdown(f'<div class="empty">{html.escape(empty_message)}</div>', unsafe_allow_html=True)
+        return
+    header = st.columns([1.35, 1.0, 0.95, 1.1, 0.85, 0.85, 0.95], vertical_alignment="center")
+    for col, label in zip(header, ["Customer", "Salesperson", "Order date", "Amount", "Shipping", "Installation", "Paid total"]):
+        col.markdown(f"**{label}**")
+    for index, row in enumerate(rows):
+        cols = st.columns([1.35, 1.0, 0.95, 1.1, 0.85, 0.85, 0.95], vertical_alignment="center")
+        if cols[0].button(str(row["customer"]), key=f"finance-open-customer-{row['customer_id']}-{index}", type="tertiary"):
+            open_customer_from_finance(int(row["customer_id"]))
+        cols[1].write(row["sales"])
+        cols[2].write(display_date(row["order_date"]))
+        cols[3].write(money(float(row["product_total"])))
+        cols[4].write(money(float(row.get("shipping") or 0)))
+        cols[5].write(money(float(row["installation"])))
+        cols[6].write(money(float(row["paid_total"])))
+
+
+def finance_expected_second_detail_table(rows: list[dict[str, Any]], empty_message: str) -> None:
+    if not rows:
+        st.markdown(f'<div class="empty">{html.escape(empty_message)}</div>', unsafe_allow_html=True)
+        return
+    header = st.columns([0.95, 1.35, 1.0, 1.15, 1.1, 0.95], vertical_alignment="center")
+    for col, label in zip(header, ["Due date", "Customer", "Salesperson", "Expected", "Product sales", "Order date"]):
+        col.markdown(f"**{label}**")
+    for index, row in enumerate(rows):
+        cols = st.columns([0.95, 1.35, 1.0, 1.15, 1.1, 0.95], vertical_alignment="center")
+        cols[0].write(display_date(row["second_payment_date"]))
+        if cols[1].button(str(row["customer"]), key=f"finance-open-expected-customer-{row['customer_id']}-{index}", type="tertiary"):
+            open_customer_from_finance(int(row["customer_id"]))
+        cols[2].write(row["sales"])
+        cols[3].write(money(float(row["second_payment_amount"])))
+        cols[4].write(money(float(row["product_total"])))
+        cols[5].write(display_date(row["order_date"]))
 
 
 def finance_page() -> None:
@@ -6107,10 +6171,10 @@ def finance_page() -> None:
             }
             for record in sorted(period_orders, key=lambda item: (item["order_date"] or "", item["customer"]), reverse=True)
         ]
-        if rows:
-            st.dataframe(rows, hide_index=True, width="stretch")
-        else:
-            st.markdown('<div class="empty">No product sales orders in this period.</div>', unsafe_allow_html=True)
+        finance_customer_detail_table(
+            sorted(period_orders, key=lambda item: (item["order_date"] or "", item["customer"]), reverse=True),
+            "No product sales orders in this period.",
+        )
     elif st.session_state.finance_detail_view == "collected":
         st.markdown("#### Payments collected in this period")
         rows = []
@@ -6152,10 +6216,10 @@ def finance_page() -> None:
             }
             for record in sorted(expected_second, key=lambda item: (item["second_payment_date"] or "", item["customer"]))
         ]
-        if rows:
-            st.dataframe(rows, hide_index=True, width="stretch")
-        else:
-            st.markdown('<div class="empty">No expected second payments in this period.</div>', unsafe_allow_html=True)
+        finance_expected_second_detail_table(
+            sorted(expected_second, key=lambda item: (item["second_payment_date"] or "", item["customer"])),
+            "No expected second payments in this period.",
+        )
 
     contribution: dict[str, dict[str, float | int]] = {}
     for record in period_orders:
@@ -6213,25 +6277,7 @@ def finance_page() -> None:
                     unsafe_allow_html=True,
                 )
 
-            st.markdown("#### Order details in this period")
-            period_detail_rows = [
-                {
-                    "Customer": record["customer"],
-                    "Salesperson": record["sales"],
-                    "Order date": display_date(record["order_date"]),
-                    "Product sales pre-tax": money(float(record["product_total"])),
-                    "Shipping": money(float(record.get("shipping") or 0)),
-                    "Installation": money(float(record["installation"])),
-                    "Collected in period": money(payment_amount_in_period(record, start, end)),
-                    "Paid total": money(float(record["paid_total"])),
-                    "Customer ID": record["customer_id"],
-                }
-                for record in sorted(period_orders, key=lambda item: (item["order_date"] or "", item["customer"]), reverse=True)
-            ]
-            if period_detail_rows:
-                st.dataframe(period_detail_rows, hide_index=True, width="stretch")
-            else:
-                st.markdown('<div class="empty">No order detail rows for this period.</div>', unsafe_allow_html=True)
+
 
     with second_tab:
         forecast_rows = [
