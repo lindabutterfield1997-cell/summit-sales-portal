@@ -1166,7 +1166,10 @@ def persist_daily_login_script(username: str) -> None:
         <script>
         (() => {{
           try {{
-            window.parent.localStorage.setItem({json.dumps(AUTH_STORAGE_KEY)}, {json.dumps(json.dumps(payload))});
+            const key = {json.dumps(AUTH_STORAGE_KEY)};
+            const value = {json.dumps(json.dumps(payload))};
+            window.parent.localStorage.setItem(key, value);
+            window.parent.document.cookie = key + '=' + encodeURIComponent(value) + '; Max-Age=86400; Path=/; SameSite=Lax';
           }} catch (err) {{}}
         }})();
         </script>
@@ -1183,14 +1186,21 @@ def restore_daily_login_script() -> None:
         (() => {{
           try {{
             const key = {json.dumps(AUTH_STORAGE_KEY)};
-            const raw = window.parent.localStorage.getItem(key);
+            const cookieRaw = () => {{
+              const prefix = key + '=';
+              const found = (window.parent.document.cookie || '').split('; ').find(part => part.startsWith(prefix));
+              return found ? decodeURIComponent(found.slice(prefix.length)) : '';
+            }};
+            const raw = window.parent.localStorage.getItem(key) || cookieRaw();
             if (!raw) return;
             const saved = JSON.parse(raw);
             const today = new Date().toISOString().slice(0, 10);
             if (!saved || saved.day !== today || !saved.user || !saved.token) {{
               window.parent.localStorage.removeItem(key);
+              window.parent.document.cookie = key + '=; Max-Age=0; Path=/; SameSite=Lax';
               return;
             }}
+            window.parent.localStorage.setItem(key, raw);
             const url = new URL(window.parent.location.href);
             if (url.searchParams.get('auth_user') === saved.user && url.searchParams.get('auth_token') === saved.token) return;
             url.searchParams.set('auth_user', saved.user);
@@ -1210,7 +1220,11 @@ def clear_daily_login_script() -> None:
         f"""
         <script>
         (() => {{
-          try {{ window.parent.localStorage.removeItem({json.dumps(AUTH_STORAGE_KEY)}); }} catch (err) {{}}
+          try {{
+            const key = {json.dumps(AUTH_STORAGE_KEY)};
+            window.parent.localStorage.removeItem(key);
+            window.parent.document.cookie = key + '=; Max-Age=0; Path=/; SameSite=Lax';
+          }} catch (err) {{}}
         }})();
         </script>
         """,
