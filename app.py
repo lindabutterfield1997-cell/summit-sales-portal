@@ -3524,6 +3524,36 @@ def period_bounds(period: str, anchor: date) -> tuple[date, date]:
     return start, date(anchor.year, 12, 31)
 
 
+def month_bounds(anchor: date) -> tuple[date, date]:
+    start = anchor.replace(day=1)
+    next_month = (start.replace(day=28) + timedelta(days=4)).replace(day=1)
+    return start, next_month - timedelta(days=1)
+
+
+def accounting_month_label(value: date) -> str:
+    return value.strftime("%b %Y")
+
+
+def finance_accounting_months(records: list[dict[str, Any]]) -> list[date]:
+    months: set[date] = {date.today().replace(day=1)}
+    for record in records:
+        for key in ("order_date", "first_payment_date", "second_payment_date"):
+            parsed = date_from_iso(str(record.get(key) or "")[:10], None)
+            if parsed:
+                months.add(parsed.replace(day=1))
+    if not months:
+        return [date.today().replace(day=1)]
+    earliest = min(months)
+    latest = max(months)
+    current = latest.replace(day=1)
+    all_months: list[date] = []
+    while current >= earliest:
+        all_months.append(current)
+        previous_day = current - timedelta(days=1)
+        current = previous_day.replace(day=1)
+    return all_months
+
+
 def in_date_range(value: str | None, start: date, end: date) -> bool:
     if not value:
         return False
@@ -5831,11 +5861,17 @@ def finance_page() -> None:
         st.markdown('<div class="empty">No ordered customers yet. Orders will appear here after customers are moved to Ordered.</div>', unsafe_allow_html=True)
         return
 
-    filter_left, filter_mid, filter_right = st.columns([1, 1, 1.2])
+    filter_left, filter_right = st.columns([1, 1.2])
+    accounting_months = finance_accounting_months(records)
+    current_month = date.today().replace(day=1)
+    default_month_index = accounting_months.index(current_month) if current_month in accounting_months else 0
     with filter_left:
-        period = st.selectbox("Finance period", ("Month", "Quarter", "Year"), index=0)
-    with filter_mid:
-        anchor = st.date_input("Period includes", value=date.today())
+        selected_month = st.selectbox(
+            "Finance period",
+            accounting_months,
+            index=default_month_index,
+            format_func=accounting_month_label,
+        )
     with filter_right:
         if is_manager_user():
             sales_options = ["All sales", *sorted({canonical_employee_name(record["sales"]) or "Unassigned" for record in records})]
@@ -5844,7 +5880,7 @@ def finance_page() -> None:
             salesperson = current_employee_name() or "My sales"
             st.text_input("Salesperson", value=salesperson, disabled=True)
 
-    start, end = period_bounds(period, anchor)
+    start, end = month_bounds(selected_month)
     filtered = [
         record for record in records
         if salesperson == "All sales" or canonical_employee_name(record["sales"]).lower() == canonical_employee_name(salesperson).lower()
