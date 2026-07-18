@@ -1052,27 +1052,34 @@ def using_default_employee_login() -> bool:
 
 
 SALES_ACCOUNTS = ("Mia", "Ethan", "Zane", "Tony", "Liyao")
+KNOWN_EMPLOYEE_NAMES = ("Mia", "Ethan", "Zane", "Tony", "Liyao", "Kevin")
+
+
+def canonical_employee_name(username: str) -> str:
+    cleaned = str(username or "").strip()
+    lowered = cleaned.lower()
+    if not lowered:
+        return ""
+    for known_name in KNOWN_EMPLOYEE_NAMES:
+        if known_name.lower() == lowered:
+            return known_name
+    for stored_username in employee_credentials():
+        if stored_username.lower() == lowered:
+            return stored_username
+    return cleaned
 
 
 def manager_accounts() -> set[str]:
     try:
         configured = st.secrets["MANAGER_USERS"]
         if isinstance(configured, str):
-            return {configured}
-        return {str(username) for username in configured}
+            return {canonical_employee_name(configured)}
+        return {canonical_employee_name(str(username)) for username in configured if str(username).strip()}
     except Exception:
         raw = os.getenv("MANAGER_USERS", "")
     if raw:
-        return {username.strip() for username in re.split(r"[,;\n]", raw) if username.strip()}
+        return {canonical_employee_name(username) for username in re.split(r"[,;\n]", raw) if username.strip()}
     return {"Kevin"} if using_default_employee_login() else set()
-
-
-def canonical_employee_name(username: str) -> str:
-    lowered = username.strip().lower()
-    for stored_username in employee_credentials():
-        if stored_username.lower() == lowered:
-            return stored_username
-    return username.strip()
 
 
 def current_employee_name() -> str:
@@ -1081,7 +1088,7 @@ def current_employee_name() -> str:
 
 def is_manager_user(username: str | None = None) -> bool:
     name = canonical_employee_name(username or current_employee_name())
-    return name in manager_accounts()
+    return any(manager.lower() == name.lower() for manager in manager_accounts())
 
 
 def customer_owner_filter() -> str:
@@ -1089,7 +1096,7 @@ def customer_owner_filter() -> str:
 
 
 def customer_owner_options(current: str | None = "") -> tuple[str, ...]:
-    current_value = (current or "").strip()
+    current_value = canonical_employee_name(current or "")
     options = list(SALES_ACCOUNTS)
     for manager_name in sorted(manager_accounts()):
         if manager_name and manager_name not in options:
@@ -1930,7 +1937,7 @@ def option_index(options: Sequence[str], value: str | None) -> int:
 
 
 def customer_source_options(current: str | None = "") -> tuple[str, ...]:
-    current_value = (current or "").strip()
+    current_value = canonical_employee_name(current or "")
     options = ["", *CUSTOMER_SOURCES]
     if current_value and current_value not in options:
         options.append(current_value)
@@ -2629,7 +2636,7 @@ def prepared_order_row(customer_id: int, order: dict[str, Any]) -> dict[str, Any
     row["quote_number"] = str(row.get("quote_number") or "")
     row["created_at"] = str(row.get("created_at") or datetime.now().isoformat(timespec="seconds"))
     row["order_date"] = str(row.get("order_date") or today_iso())
-    row["salesperson"] = str(row.get("salesperson") or default_customer_owner() or current_employee_name() or "")
+    row["salesperson"] = canonical_employee_name(str(row.get("salesperson") or default_customer_owner() or current_employee_name() or ""))
     row["subtotal"] = float(row.get("subtotal") or 0)
     row["discount"] = float(row.get("discount") or 0)
     row["tax"] = float(row.get("tax") or 0)
@@ -3584,7 +3591,7 @@ def finance_commission_summary(payload: dict[str, Any], product_total: float, su
 def finance_commission_rows(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
     commission_by_sales: dict[str, dict[str, float | int]] = {}
     for record in records:
-        sales_name = str(record.get("sales") or "Unassigned")
+        sales_name = canonical_employee_name(record.get("sales")) or "Unassigned"
         summary = record.get("commission_draft", {})
         if not isinstance(summary, dict):
             continue
@@ -3634,10 +3641,10 @@ def finance_order_records() -> list[dict[str, Any]]:
         owner = customer_owner_filter()
         for row in order_rows:
             customer = finance_customer_by_id(int(row["customer_id"]))
-            assigned_to = str(row_value(customer, "assigned_to", "") or "").strip()
-            order_salesperson = str(row_value(row, "salesperson", "") or "").strip()
+            assigned_to = canonical_employee_name(row_value(customer, "assigned_to", ""))
+            order_salesperson = canonical_employee_name(row_value(row, "salesperson", ""))
             sales_name = assigned_to or order_salesperson or "Unassigned"
-            if owner and sales_name.lower() != owner.lower():
+            if owner and sales_name.lower() != canonical_employee_name(owner).lower():
                 continue
             first_paid = bool(row_value(row, "first_payment_paid", 0))
             second_enabled = bool(row_value(row, "second_payment_enabled", 1))
@@ -3689,7 +3696,7 @@ def finance_order_records() -> list[dict[str, Any]]:
                 "customer_id": int(customer["id"]),
                 "customer": customer["name"],
                 "company": customer["company"] or "",
-                "sales": customer["assigned_to"] or "Unassigned",
+                "sales": canonical_employee_name(customer["assigned_to"]) or "Unassigned",
                 "order_date": customer["order_date"] or "",
                 "quote_number": summary.get("quote_number") or "",
                 "order_total": order_total,
@@ -4475,7 +4482,7 @@ def ensure_customer_order_from_status(customer_id: int, customer: sqlite3.Row | 
                 "created_at": latest_order["created_at"],
                 "order_date": latest_order["order_date"],
                 "customer_id": int(latest_order["customer_id"]),
-                "salesperson": latest_order["salesperson"] or row_value(customer, "assigned_to") or default_customer_owner(),
+                "salesperson": canonical_employee_name(latest_order["salesperson"] or row_value(customer, "assigned_to") or default_customer_owner()),
                 "subtotal": float(latest_order["subtotal"] or 0),
                 "discount": float(latest_order["discount"] or 0),
                 "tax": float(latest_order["tax"] or 0),
@@ -4508,7 +4515,7 @@ def ensure_customer_order_from_status(customer_id: int, customer: sqlite3.Row | 
             "order_date": order_day.isoformat(),
             "customer_id": customer_id,
             "customer_name": row_value(customer, "name", ""),
-            "salesperson": row_value(customer, "assigned_to") or default_customer_owner(),
+            "salesperson": canonical_employee_name(row_value(customer, "assigned_to") or default_customer_owner()),
             "items": ordered_items,
             "quote_number": summary.get("quote_number") or "",
             "subtotal": float(summary.get("subtotal") or 0),
@@ -4631,7 +4638,7 @@ def update_customer_basic_info(customer_id: int, data: dict[str, Any]) -> None:
 
 
 def update_customer_owner(customer_id: int, assigned_to: str, previous_owner: str = "") -> None:
-    assigned_to = assigned_to.strip()
+    assigned_to = canonical_employee_name(assigned_to)
     now = datetime.now().isoformat(timespec="seconds")
     if supabase_customers_enabled():
         try:
@@ -5278,7 +5285,7 @@ def customer_editor(existing: sqlite3.Row | None = None, form_key: str = "custom
                 "initial_contact_date": initial_contact_date.isoformat(),
                 "priority": priority,
                 "budget": float(budget),
-                "assigned_to": assigned_to.strip(),
+                "assigned_to": canonical_employee_name(assigned_to),
                 "notes": notes.strip(),
                 "first_followup_date": first_followup_date.isoformat(),
                 "next_followup_date": next_followup_date.isoformat(),
@@ -5460,7 +5467,7 @@ def render_customer_basic_info_editor(row: sqlite3.Row) -> None:
                     "client_type": client_type,
                     "project_type": project_type,
                     "budget": float(budget),
-                    "assigned_to": assigned_to.strip(),
+                    "assigned_to": canonical_employee_name(assigned_to),
                 },
             )
             st.session_state.inline_customer_editor_id = None
@@ -5835,7 +5842,7 @@ def finance_page() -> None:
         anchor = st.date_input("Period includes", value=date.today())
     with filter_right:
         if is_manager_user():
-            sales_options = ["All sales", *sorted({str(record["sales"]) for record in records})]
+            sales_options = ["All sales", *sorted({canonical_employee_name(record["sales"]) or "Unassigned" for record in records})]
             salesperson = st.selectbox("Salesperson filter", sales_options)
         else:
             salesperson = current_employee_name() or "My sales"
@@ -5844,7 +5851,7 @@ def finance_page() -> None:
     start, end = period_bounds(period, anchor)
     filtered = [
         record for record in records
-        if salesperson == "All sales" or str(record["sales"]).strip().lower() == salesperson.strip().lower()
+        if salesperson == "All sales" or canonical_employee_name(record["sales"]).lower() == canonical_employee_name(salesperson).lower()
     ]
     period_orders = [
         record for record in filtered
@@ -5887,7 +5894,7 @@ def finance_page() -> None:
 
     contribution: dict[str, dict[str, float | int]] = {}
     for record in period_orders:
-        sales_name = str(record["sales"])
+        sales_name = canonical_employee_name(record["sales"]) or "Unassigned"
         if sales_name not in contribution:
             contribution[sales_name] = {"orders": 0, "sales": 0.0, "collected": 0.0, "balance": 0.0}
         contribution[sales_name]["orders"] = int(contribution[sales_name]["orders"]) + 1
@@ -6236,7 +6243,7 @@ def after_sales_page() -> None:
                                     "damage_reason": damage_reason,
                                     "issue_description": issue_description.strip(),
                                     "appointment_date": appointment_date.isoformat(),
-                                    "assigned_to": assigned_to.strip(),
+                                    "assigned_to": canonical_employee_name(assigned_to),
                                     "internal_notes": internal_notes.strip(),
                                     "completed_at": "",
                                 }
@@ -7419,7 +7426,7 @@ def create_order_from_cart(
         "order_date": order_date_value.isoformat(),
         "customer_id": int(customer_id),
         "customer_name": row_value(customer, "name", ""),
-        "salesperson": row_value(customer, "assigned_to") or default_customer_owner(),
+        "salesperson": canonical_employee_name(row_value(customer, "assigned_to") or default_customer_owner()),
         "items": selected_items,
         "subtotal": float(adjustments.get("subtotal") or 0),
         "discount": float(adjustments.get("discount") or 0),
