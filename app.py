@@ -67,6 +67,10 @@ BRAND_SKY = "#22ADD7"
 BRAND_LIGHT = "#EAF4FA"
 BRAND_LINE = "#9FB7CC"
 FIXED_SALES_TAX_RATE = 0.0775
+# Commission logic is prepared but intentionally disabled until inventory data is complete.
+FINANCE_COMMISSION_ENABLED = False
+STOCK_COMMISSION_RATE = 0.05
+FACTORY_ORDER_COMMISSION_RATE = 0.08
 DEPOSIT_REFUND_NOTICE = "Deposit is non-refundable. Custom orders are not returnable or exchangeable once the deposit is paid, except as required by applicable law or agreed in writing by SUMMIT Windows & Doors."
 
 st.set_page_config(
@@ -100,19 +104,7 @@ class Product:
     stock_information: str = ""
 
 
-DEFAULT_PRODUCTS = [
-    Product("SD-100", "Doors", "Sliding Door", "Horizon Sliding Door", "Slim interlock profile", "A clean, contemporary slider designed for wide openings and smooth everyday operation.", 50.0, 0.0, ("Left opening", "Right opening", "Center opening"), ("Clear", "Low-E", "Grey", "Bronze", "Frosted"), ("Black", "White", "Charcoal", "Bronze"), "#64746a"),
-    Product("HD-210", "Doors", "Hinge Door", "Axis Hinge Door", "Strong thermal frame", "A refined single or double hinge door with dependable seals and flexible hardware.", 45.0, 0.0, ("Left inswing", "Right inswing", "Left outswing", "Right outswing"), ("Clear", "Low-E", "Grey", "Bronze", "Frosted"), ("Black", "White", "Charcoal", "Bronze"), "#8d674f"),
-    Product("BD-310", "Doors", "Bifold Door", "Vista Bifold Door", "Indoor-outdoor living", "Large folding panels stack neatly to one side, opening the room to the outdoors.", 50.0, 0.0, ("Stack left", "Stack right", "Split stack"), ("Clear", "Low-E", "Grey", "Bronze"), ("Black", "White", "Charcoal", "Bronze"), "#6d7d7b"),
-    Product("WD-410", "Doors", "Wood Door", "Heritage Wood Door", "Natural timber character", "A warm architectural entry door with customizable stain, glass and handing.", 50.0, 0.0, ("Left inswing", "Right inswing", "Left outswing", "Right outswing"), ("No glass", "Clear", "Frosted", "Bronze"), ("Oak", "Walnut", "Mahogany", "Paint grade"), "#9b7047"),
-    Product("GD-510", "Doors", "Garage Door", "Linea Garage Door", "Quiet sectional system", "A modern insulated garage door with horizontal detailing and optional vision panels.", 50.0, 0.0, ("Standard lift", "High lift"), ("No glass", "Clear", "Grey", "Frosted"), ("Black", "White", "Charcoal", "Bronze"), "#5d6262"),
-    Product("PD-610", "Doors", "Pivot Door", "Monument Pivot Door", "Statement entrance", "An oversized pivot entry with balanced movement, concealed hardware and bold proportions.", 120.0, 0.0, ("Pivot left", "Pivot right"), ("No glass", "Clear", "Grey", "Bronze", "Frosted"), ("Black", "White", "Charcoal", "Bronze"), "#4d4e49"),
-    Product("CW-110", "Windows", "Casement Window", "Breeze Casement Window", "Maximum ventilation", "A versatile outward-opening window with secure multi-point hardware and clean sightlines.", 96.0, 620.0, ("Hinge left", "Hinge right"), ("Clear", "Low-E", "Grey", "Bronze", "Frosted"), ("Black", "White", "Charcoal", "Bronze"), "#6f7f79"),
-    Product("BW-220", "Windows", "Bifold Window", "Servery Bifold Window", "Open-air connection", "Folding window panels create a generous opening for kitchens, bars and entertaining spaces.", 148.0, 1700.0, ("Stack left", "Stack right", "Split stack"), ("Clear", "Low-E", "Grey", "Bronze"), ("Black", "White", "Charcoal", "Bronze"), "#7e8179"),
-    Product("FW-330", "Windows", "Fixed Window", "Picture Fixed Window", "Uninterrupted views", "A non-opening picture window with excellent weather performance and minimal visual interruption.", 74.0, 480.0, ("Fixed",), ("Clear", "Low-E", "Grey", "Bronze", "Frosted"), ("Black", "White", "Charcoal", "Bronze"), "#78848b"),
-    Product("BH-440", "Windows", "Bottom Hung Window", "Awning Bottom Hung", "Controlled airflow", "A compact window hinged along the bottom for secure, measured ventilation.", 104.0, 680.0, ("Handle left", "Handle right", "Top handle"), ("Clear", "Low-E", "Grey", "Bronze", "Frosted"), ("Black", "White", "Charcoal", "Bronze"), "#727f86"),
-    Product("SW-550", "Windows", "Sliding Window", "Glide Sliding Window", "Simple horizontal movement", "A practical sliding window with removable sash and low-friction rollers.", 88.0, 560.0, ("Left opening", "Right opening", "Both sides"), ("Clear", "Low-E", "Grey", "Bronze", "Frosted"), ("Black", "White", "Charcoal", "Bronze"), "#5f746e"),
-]
+DEFAULT_PRODUCTS: list[Product] = []
 PRODUCTS: list[Product] = []
 
 OPENING_STYLES = {
@@ -213,7 +205,7 @@ def init_state() -> None:
         "quote_installation_fee": 0.0,
         "quote_shipping_fee": 0.0,
         "quote_shipping_enabled": False,
-        "quote_sales_tax_enabled": False,
+        "quote_sales_tax_enabled": True,
         "checkout_quote_adjustments": None,
         "checkout_order_adjustments": None,
     }
@@ -546,7 +538,7 @@ def seed_product_images(product: Product) -> Product:
     return Product(**{**asdict(product), "hero_image": hero, "detail_images": tuple(details)})
 
 
-def save_products(products: list[Product]) -> None:
+def save_products_locally(products: list[Product]) -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     suffix = datetime.now().strftime("%Y%m%d%H%M%S%f")
     temporary = PRODUCT_FILE.with_name(f"{PRODUCT_FILE.name}.{os.getpid()}.{suffix}.tmp")
@@ -561,18 +553,38 @@ def save_products(products: list[Product]) -> None:
             temporary.unlink()
 
 
-def load_products() -> list[Product]:
+def load_local_products() -> list[Product]:
     if not PRODUCT_FILE.exists():
-        seeded = apply_door_pricing_policy([seed_product_images(product) for product in DEFAULT_PRODUCTS])
-        save_products(seeded)
-        return seeded
+        return []
+    data = json.loads(PRODUCT_FILE.read_text(encoding="utf-8"))
+    loaded = [product_from_dict(item) for item in data]
+    cleaned = hide_placeholder_products(apply_door_pricing_policy(loaded))
+    if [product_to_dict(product) for product in cleaned] != [product_to_dict(product) for product in loaded]:
+        save_products_locally(cleaned)
+    return cleaned
+
+
+def save_products(products: list[Product]) -> None:
+    if supabase_products_enabled():
+        try:
+            supabase_save_products(products)
+        except Exception as exc:
+            st.error(f"Product changes could not be saved to Supabase: {exc}")
+        return
+    st.error("Product changes were not saved because Supabase is not configured.")
+
+
+def load_products() -> list[Product]:
+    if supabase_products_enabled():
+        try:
+            supabase_products = supabase_load_products()
+            if supabase_products:
+                return hide_placeholder_products(apply_door_pricing_policy(supabase_products))
+            warn_supabase_fallback("Supabase products table is connected, but no products were found.", key="product")
+        except Exception as exc:
+            warn_supabase_fallback(f"Supabase product sync failed, showing local products for now. {exc}", key="product")
     try:
-        data = json.loads(PRODUCT_FILE.read_text(encoding="utf-8"))
-        loaded = [product_from_dict(item) for item in data]
-        cleaned = hide_placeholder_products(apply_door_pricing_policy(loaded))
-        if [product_to_dict(product) for product in cleaned] != [product_to_dict(product) for product in loaded]:
-            save_products(cleaned)
-        return cleaned
+        return load_local_products()
     except (OSError, ValueError, TypeError) as exc:
         st.error(f"Product catalog could not be loaded: {exc}")
         if PRODUCTS:
@@ -1567,6 +1579,32 @@ SUPABASE_ORDER_DATE_COLUMNS = {
     "second_payment_date",
 }
 
+# Product rows stored in Supabase. Image fields store the same relative paths
+# used by the app today, for example: uploads/product-name-3x2.webp.
+SUPABASE_PRODUCT_COLUMNS = {
+    "id",
+    "section",
+    "category",
+    "name",
+    "subtitle",
+    "description",
+    "base_rate",
+    "minimum_price",
+    "directions",
+    "glass_colors",
+    "frame_colors",
+    "accent",
+    "hero_image",
+    "detail_images",
+    "active",
+    "updated_at",
+    "color_options",
+    "color_information",
+    "stock_information",
+}
+SUPABASE_PRODUCT_LIST_COLUMNS = {"directions", "glass_colors", "frame_colors", "color_options", "detail_images"}
+SUPABASE_PRODUCT_DATE_COLUMNS = {"updated_at"}
+
 
 def secret_or_env(name: str, default: str = "") -> str:
     try:
@@ -1581,6 +1619,10 @@ def supabase_customers_enabled() -> bool:
 
 
 def supabase_orders_enabled() -> bool:
+    return supabase_customers_enabled()
+
+
+def supabase_products_enabled() -> bool:
     return supabase_customers_enabled()
 
 
@@ -1632,11 +1674,59 @@ def supabase_request(method: str, table: str, query: str = "", payload: Any | No
     return json.loads(body)
 
 
-def warn_supabase_fallback(message: str) -> None:
-    if st.session_state.get("supabase_customer_warning_shown"):
+def warn_supabase_fallback(message: str, *, key: str = "customer") -> None:
+    state_key = f"supabase_{key}_warning_shown"
+    if st.session_state.get(state_key):
         return
-    st.session_state.supabase_customer_warning_shown = True
+    st.session_state[state_key] = True
     st.warning(message)
+
+
+def supabase_product_payload(product: Product) -> dict[str, Any]:
+    data = product_to_dict(product)
+    payload: dict[str, Any] = {}
+    for key in SUPABASE_PRODUCT_COLUMNS:
+        value = data.get(key)
+        if key in SUPABASE_PRODUCT_LIST_COLUMNS:
+            value = list(value or [])
+        if key in SUPABASE_PRODUCT_DATE_COLUMNS and not value:
+            value = None
+        payload[key] = value
+    return payload
+
+
+def supabase_product_from_row(row: dict[str, Any]) -> Product:
+    data = {key: row.get(key) for key in SUPABASE_PRODUCT_COLUMNS if key in row}
+    for key in SUPABASE_PRODUCT_LIST_COLUMNS:
+        if data.get(key) is None:
+            data[key] = []
+    if not data.get("updated_at"):
+        data["updated_at"] = ""
+    return seed_product_images(product_from_dict(data))
+
+
+def supabase_load_products() -> list[Product]:
+    rows = supabase_request(
+        "GET",
+        "products",
+        query="select=*&order=section.asc,category.asc,name.asc",
+        prefer="",
+    )
+    products = [supabase_product_from_row(row) for row in rows or []]
+    return [product for product in products if product.active]
+
+
+def supabase_save_products(products: list[Product]) -> None:
+    payload = [supabase_product_payload(product) for product in products]
+    if not payload:
+        return
+    supabase_request(
+        "POST",
+        "products",
+        query="on_conflict=id",
+        payload=payload,
+        prefer="resolution=merge-duplicates,return=representation",
+    )
 
 
 def normalize_customer_row(data: dict[str, Any]) -> dict[str, Any]:
@@ -2749,9 +2839,12 @@ def delete_customer_order(order_row: sqlite3.Row) -> None:
         conn.execute("DELETE FROM customer_orders WHERE id = ?", (int(order_row["id"]),))
 
 
-def order_payload(row: sqlite3.Row) -> dict[str, Any]:
+def order_payload(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
+    raw_payload = row_value(row, "payload", {})
+    if isinstance(raw_payload, dict):
+        return raw_payload
     try:
-        data = json.loads(row["payload"] or "{}")
+        data = json.loads(raw_payload or "{}")
     except (TypeError, ValueError):
         data = {}
     return data if isinstance(data, dict) else {}
@@ -2838,7 +2931,7 @@ def reset_quote_adjustments() -> None:
     st.session_state.quote_installation_fee = 0.0
     st.session_state.quote_shipping_fee = 0.0
     st.session_state.quote_shipping_enabled = False
-    st.session_state.quote_sales_tax_enabled = False
+    st.session_state.quote_sales_tax_enabled = True
     st.session_state.quote_discount_percent_value = 0.0
     st.session_state.quote_discount_amount_value = 0.0
     st.session_state.checkout_quote_adjustments = None
@@ -3435,6 +3528,105 @@ def finance_order_date(row: sqlite3.Row | dict[str, Any]) -> str:
     return str(row_value(row, "order_date") or row_value(row, "created_at") or "")[:10]
 
 
+def finance_commission_summary(payload: dict[str, Any], product_total: float, subtotal: float) -> dict[str, Any]:
+    """Draft commission calculator, disabled in the UI until inventory data is complete."""
+    items = payload.get("items", []) if isinstance(payload, dict) else []
+    if not isinstance(items, list) or not items:
+        return {
+            "stock_sales": 0.0,
+            "factory_sales": 0.0,
+            "unclassified_sales": max(float(product_total or 0), 0.0),
+            "stock_commission": 0.0,
+            "factory_commission": 0.0,
+            "total_commission": 0.0,
+        }
+
+    discount_factor = 1.0
+    if subtotal > 0:
+        discount_factor = max(float(product_total or 0), 0.0) / float(subtotal)
+
+    stock_sales = 0.0
+    factory_sales = 0.0
+    unclassified_sales = 0.0
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        quantity = max(int(item.get("quantity") or 1), 1)
+        line_total = max(float(item.get("line_total") or 0.0), 0.0) * discount_factor
+        deducted_qty = max(int(item.get("inventory_deducted_quantity") or 0), 0)
+        short_qty = max(int(item.get("inventory_short_quantity") or 0), 0)
+        has_inventory_result = bool(item.get("inventory_deducted"))
+
+        if not has_inventory_result:
+            unclassified_sales += line_total
+            continue
+
+        stock_qty = min(deducted_qty, quantity)
+        factory_qty = min(short_qty, max(quantity - stock_qty, 0))
+        classified_qty = stock_qty + factory_qty
+        stock_sales += line_total * stock_qty / quantity
+        factory_sales += line_total * factory_qty / quantity
+        if classified_qty < quantity:
+            unclassified_sales += line_total * (quantity - classified_qty) / quantity
+
+    stock_commission = stock_sales * STOCK_COMMISSION_RATE
+    factory_commission = factory_sales * FACTORY_ORDER_COMMISSION_RATE
+    return {
+        "stock_sales": stock_sales,
+        "factory_sales": factory_sales,
+        "unclassified_sales": unclassified_sales,
+        "stock_commission": stock_commission,
+        "factory_commission": factory_commission,
+        "total_commission": stock_commission + factory_commission,
+    }
+
+
+def finance_commission_rows(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    commission_by_sales: dict[str, dict[str, float | int]] = {}
+    for record in records:
+        sales_name = str(record.get("sales") or "Unassigned")
+        summary = record.get("commission_draft", {})
+        if not isinstance(summary, dict):
+            continue
+        if sales_name not in commission_by_sales:
+            commission_by_sales[sales_name] = {
+                "orders": 0,
+                "stock_sales": 0.0,
+                "factory_sales": 0.0,
+                "unclassified_sales": 0.0,
+                "stock_commission": 0.0,
+                "factory_commission": 0.0,
+                "total_commission": 0.0,
+            }
+        bucket = commission_by_sales[sales_name]
+        bucket["orders"] = int(bucket["orders"]) + 1
+        for key in ("stock_sales", "factory_sales", "unclassified_sales", "stock_commission", "factory_commission", "total_commission"):
+            bucket[key] = float(bucket[key]) + float(summary.get(key) or 0.0)
+
+    return [
+        {
+            "Salesperson": sales_name,
+            "Orders": values["orders"],
+            "Stock sales base (5%)": money(float(values["stock_sales"])),
+            "Factory-order sales base (8%)": money(float(values["factory_sales"])),
+            "Unclassified sales": money(float(values["unclassified_sales"])),
+            "Stock commission": money(float(values["stock_commission"])),
+            "Factory commission": money(float(values["factory_commission"])),
+            "Draft commission total": money(float(values["total_commission"])),
+        }
+        for sales_name, values in sorted(commission_by_sales.items(), key=lambda item: float(item[1]["total_commission"]), reverse=True)
+    ]
+
+
+def render_finance_commission_tab(period_orders: list[dict[str, Any]]) -> None:
+    st.info("Commission calculation is in draft mode. Enable it only after inventory data is fully loaded and verified.")
+    rows = finance_commission_rows(period_orders)
+    if rows:
+        st.dataframe(rows, hide_index=True, width="stretch")
+    else:
+        st.markdown('<div class="empty">No commission rows for this period.</div>', unsafe_allow_html=True)
+
+
 def finance_order_records() -> list[dict[str, Any]]:
     order_rows = customer_order_rows()
     if order_rows:
@@ -3454,6 +3646,9 @@ def finance_order_records() -> list[dict[str, Any]]:
             second_amount = float(row_value(row, "second_payment_amount", 0) or 0) if second_enabled else 0.0
             paid_total = (first_amount if first_paid else 0.0) + (second_amount if second_paid else 0.0)
             order_total = float(row_value(row, "total", 0) or 0)
+            subtotal = float(row_value(row, "subtotal", 0) or 0)
+            product_total = max(subtotal - float(row_value(row, "discount", 0) or 0), 0.0)
+            payload = order_payload(row)
             records.append(
                 {
                     "customer_id": int(row["customer_id"]),
@@ -3463,9 +3658,10 @@ def finance_order_records() -> list[dict[str, Any]]:
                     "order_date": finance_order_date(row),
                     "quote_number": row_value(row, "quote_number") or row_value(row, "order_number") or "",
                     "order_total": order_total,
-                    "product_total": max(float(row_value(row, "subtotal", 0) or 0) - float(row_value(row, "discount", 0) or 0), 0.0),
+                    "product_total": product_total,
                     "tax": float(row_value(row, "tax", 0) or 0),
                     "installation": float(row_value(row, "installation", 0) or 0),
+                    "shipping": float(row_value(row, "shipping", 0) or 0),
                     "first_payment_date": str(row_value(row, "first_payment_date", "") or "")[:10],
                     "first_payment_amount": first_amount,
                     "first_payment_paid": first_paid,
@@ -3475,6 +3671,7 @@ def finance_order_records() -> list[dict[str, Any]]:
                     "second_payment_paid": second_paid,
                     "paid_total": paid_total,
                     "balance": max(order_total - paid_total, 0.0),
+                    "commission_draft": finance_commission_summary(payload, product_total, subtotal),
                 }
             )
         return records
@@ -3485,6 +3682,8 @@ def finance_order_records() -> list[dict[str, Any]]:
         summary = order_summary_from_quote(latest_customer_quote(int(customer["id"])), wishlist)
         order_total = float(summary["total"] or 0)
         schedule = payment_schedule_values(customer, order_total)
+        product_total = float(summary.get("product_total") or 0)
+        subtotal = float(summary.get("subtotal") or product_total or 0)
         records.append(
             {
                 "customer_id": int(customer["id"]),
@@ -3494,9 +3693,10 @@ def finance_order_records() -> list[dict[str, Any]]:
                 "order_date": customer["order_date"] or "",
                 "quote_number": summary.get("quote_number") or "",
                 "order_total": order_total,
-                "product_total": float(summary.get("product_total") or 0),
+                "product_total": product_total,
                 "tax": float(summary.get("tax") or 0),
                 "installation": float(summary.get("installation") or 0),
+                "shipping": float(summary.get("shipping") or 0),
                 "first_payment_date": schedule["first_date"],
                 "first_payment_amount": float(schedule["first_amount"]),
                 "first_payment_paid": bool(schedule["first_paid"]),
@@ -3506,6 +3706,7 @@ def finance_order_records() -> list[dict[str, Any]]:
                 "second_payment_paid": bool(schedule["second_paid"]),
                 "paid_total": float(schedule["paid_total"]),
                 "balance": float(schedule["balance"]),
+                "commission_draft": finance_commission_summary({}, product_total, subtotal),
             }
         )
     return records
@@ -3530,7 +3731,11 @@ def finance_csv(records: list[dict[str, Any]]) -> str:
             "sales",
             "order_date",
             "quote_number",
-            "order_total",
+            "product_total_pre_tax",
+            "sales_tax",
+            "shipping",
+            "installation",
+            "invoice_total_after_tax",
             "paid_total",
             "balance",
             "first_payment_date",
@@ -3543,7 +3748,13 @@ def finance_csv(records: list[dict[str, Any]]) -> str:
     )
     writer.writeheader()
     for record in records:
-        writer.writerow({key: record.get(key, "") for key in writer.fieldnames})
+        row = {key: record.get(key, "") for key in writer.fieldnames}
+        row["product_total_pre_tax"] = record.get("product_total", 0.0)
+        row["sales_tax"] = record.get("tax", 0.0)
+        row["shipping"] = record.get("shipping", 0.0)
+        row["installation"] = record.get("installation", 0.0)
+        row["invoice_total_after_tax"] = record.get("order_total", 0.0)
+        writer.writerow(row)
     return output.getvalue()
 
 
@@ -4045,7 +4256,7 @@ def cart_discount(subtotal: float) -> tuple[float, str]:
 
 
 def quote_tax_rate() -> float:
-    return FIXED_SALES_TAX_RATE if st.session_state.get("quote_sales_tax_enabled", False) else 0.0
+    return FIXED_SALES_TAX_RATE if st.session_state.get("quote_sales_tax_enabled", True) else 0.0
 
 
 def quote_tax_label() -> str:
@@ -5659,17 +5870,20 @@ def finance_page() -> None:
         )
     ]
 
-    sales_amount = sum(float(record["order_total"]) for record in period_orders)
+    product_sales_amount = sum(float(record["product_total"]) for record in period_orders)
+    sales_tax_amount = sum(float(record["tax"]) for record in period_orders)
+    invoice_total_amount = sum(float(record["order_total"]) for record in period_orders)
     collected_amount = sum(payment_amount_in_period(record, start, end) for record in filtered)
     expected_second_amount = sum(float(record["second_payment_amount"]) for record in expected_second)
     open_balance = sum(float(record["balance"]) for record in filtered)
 
-    st.caption(f"Showing {display_date(start.isoformat())} to {display_date(end.isoformat())}. Sales are based on Ordered customers by order date. Expected second payment includes unpaid second payments due in the selected period.")
-    kpi1, kpi2, kpi3, kpi4 = st.columns(4)
-    kpi1.metric("Sales amount", money(sales_amount), f"{len(period_orders)} orders")
-    kpi2.metric("Collected in period", money(collected_amount))
-    kpi3.metric("Expected second payment", money(expected_second_amount), f"{len(expected_second)} customers")
-    kpi4.metric("Open A/R balance", money(open_balance), f"{len(overdue_payments)} overdue")
+    st.caption(f"Showing {display_date(start.isoformat())} to {display_date(end.isoformat())}. Sales performance uses product amount before sales tax. Customer receipts show invoice total after 7.75% sales tax.")
+    kpi1, kpi2, kpi3, kpi4, kpi5 = st.columns(5)
+    kpi1.metric("Product sales pre-tax", money(product_sales_amount), f"{len(period_orders)} orders")
+    kpi2.metric("Sales tax", money(sales_tax_amount))
+    kpi3.metric("Invoice total", money(invoice_total_amount))
+    kpi4.metric("Collected in period", money(collected_amount))
+    kpi5.metric("Open A/R balance", money(open_balance), f"{len(overdue_payments)} overdue")
 
     contribution: dict[str, dict[str, float | int]] = {}
     for record in period_orders:
@@ -5677,7 +5891,7 @@ def finance_page() -> None:
         if sales_name not in contribution:
             contribution[sales_name] = {"orders": 0, "sales": 0.0, "collected": 0.0, "balance": 0.0}
         contribution[sales_name]["orders"] = int(contribution[sales_name]["orders"]) + 1
-        contribution[sales_name]["sales"] = float(contribution[sales_name]["sales"]) + float(record["order_total"])
+        contribution[sales_name]["sales"] = float(contribution[sales_name]["sales"]) + float(record["product_total"])
         contribution[sales_name]["collected"] = float(contribution[sales_name]["collected"]) + payment_amount_in_period(record, start, end)
         contribution[sales_name]["balance"] = float(contribution[sales_name]["balance"]) + float(record["balance"])
 
@@ -5685,15 +5899,20 @@ def finance_page() -> None:
         {
             "Salesperson": sales_name,
             "Orders": values["orders"],
-            "Sales amount": money(float(values["sales"])),
+            "Product sales pre-tax": money(float(values["sales"])),
             "Collected in period": money(float(values["collected"])),
             "Open balance": money(float(values["balance"])),
-            "Share": f"{(float(values['sales']) / sales_amount * 100):.1f}%" if sales_amount else "0.0%",
+            "Share": f"{(float(values['sales']) / product_sales_amount * 100):.1f}%" if product_sales_amount else "0.0%",
         }
         for sales_name, values in sorted(contribution.items(), key=lambda item: float(item[1]["sales"]), reverse=True)
     ]
 
-    sales_tab, second_tab, ar_tab, export_tab = st.tabs(["Sales contribution", "Second-payment forecast", "Receivables", "Export"])
+    tab_labels = ["Sales contribution", "Second-payment forecast", "Receivables", "Export"]
+    if FINANCE_COMMISSION_ENABLED and is_manager_user():
+        tab_labels.append("Commission draft")
+    finance_tabs = st.tabs(tab_labels)
+    sales_tab, second_tab, ar_tab, export_tab = finance_tabs[:4]
+    commission_tab = finance_tabs[4] if len(finance_tabs) > 4 else None
     with sales_tab:
         if not contribution_rows:
             st.markdown('<div class="empty">No orders in this period.</div>', unsafe_allow_html=True)
@@ -5707,7 +5926,7 @@ def finance_page() -> None:
                     f"""
                     <div style="margin:10px 0">
                       <div style="display:flex;justify-content:space-between;font-size:13px;font-weight:800">
-                        <span>{html.escape(str(row["Salesperson"]))}</span><span>{row["Sales amount"]}</span>
+                        <span>{html.escape(str(row["Salesperson"]))}</span><span>{row["Product sales pre-tax"]}</span>
                       </div>
                       <div style="height:10px;background:#e2e8e3;border-radius:999px;overflow:hidden">
                         <div style="height:10px;width:{width}%;background:#23342c"></div>
@@ -5723,7 +5942,11 @@ def finance_page() -> None:
                     "Customer": record["customer"],
                     "Salesperson": record["sales"],
                     "Order date": display_date(record["order_date"]),
-                    "Order total": money(float(record["order_total"])),
+                    "Product sales pre-tax": money(float(record["product_total"])),
+                    "Sales tax": money(float(record["tax"])),
+                    "Shipping": money(float(record.get("shipping") or 0)),
+                    "Installation": money(float(record["installation"])),
+                    "Invoice total after tax": money(float(record["order_total"])),
                     "Collected in period": money(payment_amount_in_period(record, start, end)),
                     "Paid total": money(float(record["paid_total"])),
                     "Open balance": money(float(record["balance"])),
@@ -5743,7 +5966,9 @@ def finance_page() -> None:
                 "Customer": record["customer"],
                 "Sales": record["sales"],
                 "Expected second payment": money(float(record["second_payment_amount"])),
-                "Order total": money(float(record["order_total"])),
+                "Product sales pre-tax": money(float(record["product_total"])),
+                "Sales tax": money(float(record["tax"])),
+                "Invoice total after tax": money(float(record["order_total"])),
                 "Balance": money(float(record["balance"])),
             }
             for record in sorted(expected_second, key=lambda item: item["second_payment_date"] or "")
@@ -5759,7 +5984,9 @@ def finance_page() -> None:
                 "Customer": record["customer"],
                 "Sales": record["sales"],
                 "Order date": display_date(record["order_date"]),
-                "Order total": money(float(record["order_total"])),
+                "Product sales pre-tax": money(float(record["product_total"])),
+                "Sales tax": money(float(record["tax"])),
+                "Invoice total after tax": money(float(record["order_total"])),
                 "Paid": money(float(record["paid_total"])),
                 "Balance": money(float(record["balance"])),
                 "Next due": display_date(record["second_payment_date"] if record["second_payment_enabled"] and not record["second_payment_paid"] else record["first_payment_date"]),
@@ -5780,7 +6007,11 @@ def finance_page() -> None:
                 "Sales": record["sales"],
                 "Order date": display_date(record["order_date"]),
                 "Quote": record["quote_number"] or "Customer record",
-                "Order total": money(float(record["order_total"])),
+                "Product sales pre-tax": money(float(record["product_total"])),
+                "Sales tax": money(float(record["tax"])),
+                "Shipping": money(float(record.get("shipping") or 0)),
+                "Installation": money(float(record["installation"])),
+                "Invoice total after tax": money(float(record["order_total"])),
                 "Paid total": money(float(record["paid_total"])),
                 "Balance": money(float(record["balance"])),
                 "First paid": "Yes" if record["first_payment_paid"] else "No",
@@ -5798,6 +6029,10 @@ def finance_page() -> None:
             mime="text/csv",
             width="stretch",
         )
+
+    if commission_tab is not None:
+        with commission_tab:
+            render_finance_commission_tab(period_orders)
 
 
 def product_choice_label(choice: dict[str, Any]) -> str:
@@ -6844,7 +7079,7 @@ def quote_adjustment_snapshot() -> dict[str, Any]:
         "total": discounted_subtotal + tax + installation_fee + shipping_fee,
         "discount_type": st.session_state.get("quote_discount_type", "No discount"),
         "discount_value": quote_discount_raw_value(),
-        "tax_enabled": bool(st.session_state.get("quote_sales_tax_enabled", False)),
+        "tax_enabled": bool(st.session_state.get("quote_sales_tax_enabled", True)),
     }
 
 
@@ -7095,7 +7330,7 @@ def cart_page() -> None:
         st.checkbox(
             f"Calculate sales tax ({FIXED_SALES_TAX_RATE * 100:.2f}%)",
             key="quote_sales_tax_enabled",
-            help="Turn this off for tax-exempt customers or orders that should not include sales tax.",
+            help="Keep this on for taxable orders. Turn it off only for tax-exempt or no-tax orders.",
         )
         adjustment_snapshot = quote_adjustment_snapshot()
         st.session_state.checkout_quote_adjustments = adjustment_snapshot
