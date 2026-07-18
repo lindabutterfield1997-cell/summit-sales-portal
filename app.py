@@ -3772,7 +3772,6 @@ def finance_csv(records: list[dict[str, Any]]) -> str:
             "shipping",
             "installation",
             "paid_total",
-            "balance",
             "first_payment_date",
             "first_payment_amount",
             "first_payment_paid",
@@ -5895,40 +5894,30 @@ def finance_page() -> None:
         and not record["second_payment_paid"]
         and in_date_range(record["second_payment_date"], start, end)
     ]
-    overdue_payments = [
-        record for record in filtered
-        if (
-            (not record["first_payment_paid"] and record["first_payment_amount"] > 0 and record["first_payment_date"] and date_from_iso(record["first_payment_date"]) < date.today())
-            or (
-                record["second_payment_enabled"]
-                and not record["second_payment_paid"]
-                and record["second_payment_amount"] > 0
-                and record["second_payment_date"]
-                and date_from_iso(record["second_payment_date"]) < date.today()
-            )
-        )
-    ]
-
     product_sales_amount = sum(float(record["product_total"]) for record in period_orders)
     collected_amount = sum(payment_amount_in_period(record, start, end) for record in filtered)
     expected_second_amount = sum(float(record["second_payment_amount"]) for record in expected_second)
-    open_balance = sum(float(record["balance"]) for record in filtered)
 
-    st.caption(f"Showing {display_date(start.isoformat())} to {display_date(end.isoformat())}. Sales performance uses product amount before sales tax.")
+    st.caption(f"Showing {display_date(start.isoformat())} to {display_date(end.isoformat())}. Sales performance uses product amount before sales tax. Expected second payment is based on unpaid second-payment due dates in this calendar month.")
     kpi1, kpi2, kpi3 = st.columns(3)
     kpi1.metric("Product sales pre-tax", money(product_sales_amount), f"{len(period_orders)} orders")
     kpi2.metric("Collected in period", money(collected_amount))
-    kpi3.metric("Open A/R balance", money(open_balance), f"{len(overdue_payments)} overdue")
+    kpi3.metric("Expected second payment", money(expected_second_amount), f"{len(expected_second)} customers")
 
     contribution: dict[str, dict[str, float | int]] = {}
     for record in period_orders:
         sales_name = canonical_employee_name(record["sales"]) or "Unassigned"
         if sales_name not in contribution:
-            contribution[sales_name] = {"orders": 0, "sales": 0.0, "collected": 0.0, "balance": 0.0}
+            contribution[sales_name] = {"orders": 0, "sales": 0.0, "collected": 0.0, "expected_second": 0.0}
         contribution[sales_name]["orders"] = int(contribution[sales_name]["orders"]) + 1
         contribution[sales_name]["sales"] = float(contribution[sales_name]["sales"]) + float(record["product_total"])
         contribution[sales_name]["collected"] = float(contribution[sales_name]["collected"]) + payment_amount_in_period(record, start, end)
-        contribution[sales_name]["balance"] = float(contribution[sales_name]["balance"]) + float(record["balance"])
+
+    for record in expected_second:
+        sales_name = canonical_employee_name(record["sales"]) or "Unassigned"
+        if sales_name not in contribution:
+            contribution[sales_name] = {"orders": 0, "sales": 0.0, "collected": 0.0, "expected_second": 0.0}
+        contribution[sales_name]["expected_second"] = float(contribution[sales_name]["expected_second"]) + float(record["second_payment_amount"])
 
     contribution_rows = [
         {
@@ -5936,18 +5925,18 @@ def finance_page() -> None:
             "Orders": values["orders"],
             "Product sales pre-tax": money(float(values["sales"])),
             "Collected in period": money(float(values["collected"])),
-            "Open balance": money(float(values["balance"])),
+            "Expected second payment": money(float(values["expected_second"])),
             "Share": f"{(float(values['sales']) / product_sales_amount * 100):.1f}%" if product_sales_amount else "0.0%",
         }
         for sales_name, values in sorted(contribution.items(), key=lambda item: float(item[1]["sales"]), reverse=True)
     ]
 
-    tab_labels = ["Sales contribution", "Second-payment forecast", "Receivables", "Export"]
+    tab_labels = ["Sales contribution", "Second-payment forecast", "Export"]
     if FINANCE_COMMISSION_ENABLED and is_manager_user():
         tab_labels.append("Commission draft")
     finance_tabs = st.tabs(tab_labels)
-    sales_tab, second_tab, ar_tab, export_tab = finance_tabs[:4]
-    commission_tab = finance_tabs[4] if len(finance_tabs) > 4 else None
+    sales_tab, second_tab, export_tab = finance_tabs[:3]
+    commission_tab = finance_tabs[3] if len(finance_tabs) > 3 else None
     with sales_tab:
         if not contribution_rows:
             st.markdown('<div class="empty">No orders in this period.</div>', unsafe_allow_html=True)
@@ -5982,7 +5971,6 @@ def finance_page() -> None:
                     "Installation": money(float(record["installation"])),
                     "Collected in period": money(payment_amount_in_period(record, start, end)),
                     "Paid total": money(float(record["paid_total"])),
-                    "Open balance": money(float(record["balance"])),
                     "Customer ID": record["customer_id"],
                 }
                 for record in sorted(period_orders, key=lambda item: (item["order_date"] or "", item["customer"]), reverse=True)
@@ -6000,7 +5988,6 @@ def finance_page() -> None:
                 "Sales": record["sales"],
                 "Expected second payment": money(float(record["second_payment_amount"])),
                 "Product sales pre-tax": money(float(record["product_total"])),
-                "Balance": money(float(record["balance"])),
             }
             for record in sorted(expected_second, key=lambda item: item["second_payment_date"] or "")
         ]
@@ -6008,25 +5995,6 @@ def finance_page() -> None:
             st.dataframe(forecast_rows, hide_index=True, width="stretch")
         else:
             st.markdown('<div class="empty">No unpaid second payments due in this period.</div>', unsafe_allow_html=True)
-
-    with ar_tab:
-        receivable_rows = [
-            {
-                "Customer": record["customer"],
-                "Sales": record["sales"],
-                "Order date": display_date(record["order_date"]),
-                "Product sales pre-tax": money(float(record["product_total"])),
-                "Paid": money(float(record["paid_total"])),
-                "Balance": money(float(record["balance"])),
-                "Next due": display_date(record["second_payment_date"] if record["second_payment_enabled"] and not record["second_payment_paid"] else record["first_payment_date"]),
-            }
-            for record in sorted(filtered, key=lambda item: float(item["balance"]), reverse=True)
-            if float(record["balance"]) > 0
-        ]
-        if receivable_rows:
-            st.dataframe(receivable_rows, hide_index=True, width="stretch")
-        else:
-            st.success("No open receivable balance for the current filter.")
 
     with export_tab:
         detail_rows = [
@@ -6040,7 +6008,6 @@ def finance_page() -> None:
                 "Shipping": money(float(record.get("shipping") or 0)),
                 "Installation": money(float(record["installation"])),
                 "Paid total": money(float(record["paid_total"])),
-                "Balance": money(float(record["balance"])),
                 "First paid": "Yes" if record["first_payment_paid"] else "No",
                 "Second due": display_date(record["second_payment_date"]),
                 "Second amount": money(float(record["second_payment_amount"])),
