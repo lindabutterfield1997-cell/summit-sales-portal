@@ -5946,6 +5946,7 @@ def customers_page() -> None:
             left.info(f"Showing customer from Finance: {row_value(focused_customer, 'name', 'Customer')}.")
             if right.button("Show all customers", width="stretch"):
                 st.session_state.focus_customer_id = None
+                clear_customer_query_params()
                 st.rerun()
             customer_summary_metrics([focused_customer])
             st.write("")
@@ -6038,6 +6039,43 @@ def customers_page() -> None:
         customer_editor(customer_by_id(selected_id) if selected_id else None, form_key="customer-editor-tab")
 
 
+def query_param_value(name: str) -> str:
+    try:
+        value = st.query_params.get(name, "")
+    except Exception:
+        return ""
+    if isinstance(value, list):
+        return str(value[0] if value else "")
+    return str(value or "")
+
+
+def apply_query_params_to_state() -> None:
+    page = query_param_value("page")
+    customer_id = query_param_value("customer_id")
+    if page == "Customers" and customer_id.isdigit():
+        st.session_state.page = "Customers"
+        st.session_state.focus_customer_id = int(customer_id)
+        st.session_state.inline_customer_editor_id = None
+        st.session_state.customer_editor_id = None
+
+
+def clear_customer_query_params() -> None:
+    try:
+        st.query_params.clear()
+    except Exception:
+        pass
+
+
+def customer_detail_href(customer_id: int) -> str:
+    return f"?page=Customers&customer_id={int(customer_id)}"
+
+
+def customer_detail_link(customer_id: int, customer_name: str) -> str:
+    safe_name = html.escape(str(customer_name or "Customer"))
+    href = html.escape(customer_detail_href(int(customer_id)), quote=True)
+    return f'<a href="{href}" target="_blank" rel="noopener noreferrer" style="font-weight:800;color:#1f3d2f;text-decoration:underline;text-underline-offset:3px">{safe_name}</a>'
+
+
 def open_customer_from_finance(customer_id: int) -> None:
     st.session_state.focus_customer_id = int(customer_id)
     st.session_state.inline_customer_editor_id = None
@@ -6055,8 +6093,7 @@ def finance_customer_detail_table(rows: list[dict[str, Any]], empty_message: str
         col.markdown(f"**{label}**")
     for index, row in enumerate(rows):
         cols = st.columns([1.35, 1.0, 0.95, 1.1, 0.85, 0.85, 0.95], vertical_alignment="center")
-        if cols[0].button(str(row["customer"]), key=f"finance-open-customer-{row['customer_id']}-{index}", type="tertiary"):
-            open_customer_from_finance(int(row["customer_id"]))
+        cols[0].markdown(customer_detail_link(int(row["customer_id"]), str(row["customer"])), unsafe_allow_html=True)
         cols[1].write(row["sales"])
         cols[2].write(display_date(row["order_date"]))
         cols[3].write(money(float(row["product_total"])))
@@ -6075,8 +6112,7 @@ def finance_expected_second_detail_table(rows: list[dict[str, Any]], empty_messa
     for index, row in enumerate(rows):
         cols = st.columns([0.95, 1.35, 1.0, 1.15, 1.1, 0.95], vertical_alignment="center")
         cols[0].write(display_date(row["second_payment_date"]))
-        if cols[1].button(str(row["customer"]), key=f"finance-open-expected-customer-{row['customer_id']}-{index}", type="tertiary"):
-            open_customer_from_finance(int(row["customer_id"]))
+        cols[1].markdown(customer_detail_link(int(row["customer_id"]), str(row["customer"])), unsafe_allow_html=True)
         cols[2].write(row["sales"])
         cols[3].write(money(float(row["second_payment_amount"])))
         cols[4].write(money(float(row["product_total"])))
@@ -8886,6 +8922,7 @@ def main() -> None:
         employee_login_page()
         st.markdown('<div class="footer">FRAMEFLOW · EMPLOYEE ACCESS REQUIRED</div>', unsafe_allow_html=True)
         return
+    apply_query_params_to_state()
     # Phone numbers are formatted on save/quote generation.
     # The live browser mask is disabled because it can interrupt Streamlit text input.
     init_db()
