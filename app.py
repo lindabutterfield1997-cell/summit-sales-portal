@@ -309,6 +309,9 @@ def init_db() -> None:
                 """
             )
         profile_columns = {
+            "city": "TEXT",
+            "state": "TEXT",
+            "zip_code": "TEXT",
             "client_type": "TEXT",
             "client_type_note": "TEXT",
             "project_type": "TEXT",
@@ -1445,6 +1448,7 @@ CUSTOMER_DEFAULTS: dict[str, Any] = {
     "phone": "",
     "address": "",
     "city": "",
+    "state": "",
     "zip_code": "",
     "products_interest": "",
     "client_type": "",
@@ -1500,6 +1504,7 @@ SUPABASE_CUSTOMER_COLUMNS = {
     "phone",
     "address",
     "city",
+    "state",
     "zip_code",
     "products_interest",
     "client_type",
@@ -1584,6 +1589,39 @@ SUPABASE_ORDER_DATE_COLUMNS = {
     "order_date",
     "first_payment_date",
     "second_payment_date",
+}
+
+SUPABASE_ORDER_ITEM_COLUMNS = {
+    "order_id",
+    "customer_id",
+    "order_number",
+    "line_index",
+    "line_id",
+    "product_id",
+    "product_name",
+    "section",
+    "category",
+    "quantity",
+    "width",
+    "height",
+    "area_sqft",
+    "direction",
+    "glass",
+    "frame",
+    "color",
+    "notes",
+    "unit_price",
+    "original_unit_price",
+    "line_subtotal",
+    "order_discount_allocated",
+    "line_total_after_discount",
+    "price_adjusted",
+    "price_adjustment_mode",
+    "inventory_deducted",
+    "inventory_deducted_quantity",
+    "inventory_short_quantity",
+    "production_required",
+    "payload",
 }
 
 # Product rows stored in Supabase. Image fields store the same relative paths
@@ -1739,8 +1777,16 @@ def supabase_save_products(products: list[Product]) -> None:
 def normalize_customer_row(data: dict[str, Any]) -> dict[str, Any]:
     row = dict(CUSTOMER_DEFAULTS)
     row.update(data or {})
-    if row.get("zip_code") and not row.get("area_zip"):
-        row["area_zip"] = row["zip_code"]
+    normalized_zip = normalize_zip_code(row.get("zip_code") or row.get("area_zip") or row.get("address"))
+    if normalized_zip:
+        row["zip_code"] = normalized_zip
+        if not row.get("area_zip"):
+            row["area_zip"] = normalized_zip
+        city, state = city_state_from_zip(normalized_zip)
+        if city and not row.get("city"):
+            row["city"] = city
+        if state and not row.get("state"):
+            row["state"] = state
     if row.get("wishlist") is None:
         row["wishlist"] = "[]"
     elif isinstance(row.get("wishlist"), (list, dict)):
@@ -1767,6 +1813,9 @@ SQLITE_CUSTOMER_COLUMNS = (
     "email",
     "phone",
     "address",
+    "city",
+    "state",
+    "zip_code",
     "products_interest",
     "client_type",
     "client_type_note",
@@ -1880,10 +1929,17 @@ def supabase_customer_payload(data: dict[str, Any], *, include_created_at: bool 
         if target_key in SUPABASE_DATE_COLUMNS and not value:
             value = None
         payload[target_key] = value
-    if "city" not in payload:
-        city = city_from_address(str(data.get("address") or "")) or city_from_zip(str(data.get("zip_code") or data.get("area_zip") or data.get("address") or ""))
-        if city:
-            payload["city"] = city
+    normalized_zip = normalize_zip_code(data.get("zip_code") or data.get("area_zip") or data.get("address"))
+    if normalized_zip:
+        payload["zip_code"] = normalized_zip
+        payload.setdefault("area_zip", normalized_zip)
+    city, state = city_state_from_zip(normalized_zip) if normalized_zip else ("", "")
+    if not city:
+        city = city_from_address(str(data.get("address") or ""))
+    if city and not payload.get("city"):
+        payload["city"] = city
+    if state and not payload.get("state"):
+        payload["state"] = state
     return payload
 
 
@@ -2700,6 +2756,73 @@ def supabase_order_payload(order_row: dict[str, Any], include_id: bool = False) 
     return payload
 
 
+def supabase_order_item_payloads(order_id: int, order_row: dict[str, Any]) -> list[dict[str, Any]]:
+    raw_payload = order_row.get("payload") or {}
+    payload = raw_payload if isinstance(raw_payload, dict) else {}
+    items = payload.get("items", []) if isinstance(payload, dict) else []
+    if not isinstance(items, list):
+        return []
+
+    subtotal = max(float(order_row.get("subtotal") or payload.get("subtotal") or 0), 0.0)
+    discount = max(float(order_row.get("discount") or payload.get("discount") or 0), 0.0)
+    discount_factor = (discount / subtotal) if subtotal > 0 else 0.0
+    rows: list[dict[str, Any]] = []
+    for index, item in enumerate(items, start=1):
+        if not isinstance(item, dict):
+            continue
+        quantity = max(int(item.get("quantity") or 1), 1)
+        width = float(item.get("width") or 0)
+        height = float(item.get("height") or 0)
+        line_subtotal = max(float(item.get("line_total") or 0), 0.0)
+        allocated_discount = min(line_subtotal, line_subtotal * discount_factor)
+        line_total_after_discount = max(line_subtotal - allocated_discount, 0.0)
+        unit_price = float(item.get("unit_price") or (line_subtotal / quantity if quantity else 0) or 0)
+        original_unit_price = float(item.get("original_unit_price") or unit_price or 0)
+        area_sqft = float(item.get("area_sqft") or ((width * height / 144) if width and height else 0))
+        row = {
+            "order_id": int(order_id),
+            "customer_id": int(order_row.get("customer_id") or 0),
+            "order_number": str(order_row.get("order_number") or payload.get("order_number") or ""),
+            "line_index": index,
+            "line_id": str(item.get("line_id") or ""),
+            "product_id": str(item.get("product_id") or ""),
+            "product_name": str(item.get("name") or item.get("product_name") or item.get("product_id") or "Product"),
+            "section": str(item.get("section") or ""),
+            "category": str(item.get("category") or ""),
+            "quantity": quantity,
+            "width": width,
+            "height": height,
+            "area_sqft": area_sqft,
+            "direction": str(item.get("direction") or ""),
+            "glass": str(item.get("glass") or ""),
+            "frame": str(item.get("frame") or ""),
+            "color": str(item.get("color") or ""),
+            "notes": str(item.get("notes") or ""),
+            "unit_price": unit_price,
+            "original_unit_price": original_unit_price,
+            "line_subtotal": line_subtotal,
+            "order_discount_allocated": allocated_discount,
+            "line_total_after_discount": line_total_after_discount,
+            "price_adjusted": bool(item.get("price_adjusted", False)),
+            "price_adjustment_mode": str(item.get("price_adjustment_mode") or ""),
+            "inventory_deducted": bool(item.get("inventory_deducted", False)),
+            "inventory_deducted_quantity": int(item.get("inventory_deducted_quantity") or 0),
+            "inventory_short_quantity": int(item.get("inventory_short_quantity") or 0),
+            "production_required": bool(item.get("production_required", False)),
+            "payload": item,
+        }
+        rows.append({key: value for key, value in row.items() if key in SUPABASE_ORDER_ITEM_COLUMNS})
+    return rows
+
+
+def supabase_replace_customer_order_items(order_id: int, order_row: dict[str, Any]) -> None:
+    query = parse.urlencode({"order_id": f"eq.{int(order_id)}"})
+    supabase_request("DELETE", "customer_order_items", query=query, prefer="return=minimal")
+    item_payloads = supabase_order_item_payloads(order_id, order_row)
+    if item_payloads:
+        supabase_request("POST", "customer_order_items", payload=item_payloads)
+
+
 def sqlite_order_insert_values(order_row: dict[str, Any]) -> tuple[Any, ...]:
     raw_payload = order_row.get("payload")
     payload_text = raw_payload if isinstance(raw_payload, str) else json.dumps(raw_payload or {}, ensure_ascii=False)
@@ -2789,8 +2912,11 @@ def supabase_save_customer_order(customer_id: int, order: dict[str, Any]) -> int
         rows = supabase_request("POST", "customer_orders", payload=payload)
     if not rows:
         return None
+    saved_order_id = int(rows[0].get("id") or 0) or None
+    if saved_order_id:
+        supabase_replace_customer_order_items(saved_order_id, {**local_order_row, "customer_id": supabase_customer_id})
     mirror_order_to_sqlite(local_order_row)
-    return int(rows[0].get("id") or 0) or None
+    return saved_order_id
 
 
 def save_customer_order(customer_id: int, order: dict[str, Any]) -> int:
@@ -4872,6 +4998,7 @@ def mark_wishlist_items_ordered(customer_id: int, wishlist: list[dict[str, Any]]
 
 def supabase_delete_customer_orders(customer_id: int) -> None:
     query = parse.urlencode({"customer_id": f"eq.{int(customer_id)}"})
+    supabase_request("DELETE", "customer_order_items", query=query, prefer="return=minimal")
     supabase_request("DELETE", "customer_orders", query=query, prefer="")
 
 
@@ -4982,25 +5109,49 @@ def city_from_address(value: str) -> str:
     return ""
 
 
-def city_from_zip(value: str) -> str:
+def normalize_zip_code(value: Any) -> str:
     match = re.search(r"\b(\d{5})(?:-\d{4})?\b", str(value or ""))
-    if not match:
+    return match.group(1) if match else ""
+
+
+def city_from_zip(value: str) -> str:
+    zip_code = normalize_zip_code(value)
+    if not zip_code:
         return ""
-    return ZIP_CITY_PREFIXES.get(match.group(1)[:3], "")
+    return ZIP_CITY_PREFIXES.get(zip_code[:3], "")
+
+
+def state_from_zip(value: str) -> str:
+    zip_code = normalize_zip_code(value)
+    if not zip_code:
+        return ""
+    if zip_code[:3] in ZIP_CITY_PREFIXES:
+        return "CA"
+    return ""
+
+
+def city_state_from_zip(value: Any) -> tuple[str, str]:
+    zip_code = normalize_zip_code(value)
+    if not zip_code:
+        return "", ""
+    return city_from_zip(zip_code), state_from_zip(zip_code)
 
 
 def customer_city_label(row: sqlite3.Row | dict[str, Any]) -> str:
     saved_city = str(row_value(row, "city", "")).strip()
+    saved_state = str(row_value(row, "state", "")).strip().upper()
     if saved_city:
-        return saved_city.title()
+        city = saved_city.title()
+        return f"{city}, {saved_state}" if saved_state else city
     address = row_value(row, "address")
     city = city_from_address(address)
+    state = saved_state
     if city:
-        return city
-    for value in (row_value(row, "area_zip"), address):
-        city = city_from_zip(value)
+        return f"{city}, {state}" if state else city
+    for value in (row_value(row, "zip_code"), row_value(row, "area_zip"), address):
+        city, state = city_state_from_zip(value)
         if city:
-            return city
+            return f"{city}, {state}" if state else city
     return ""
 
 
@@ -5044,6 +5195,9 @@ def upsert_customer_from_quote(
         "email": customer.get("email", "").strip(),
         "phone": format_us_phone(customer.get("phone", "")),
         "address": customer.get("address", "").strip(),
+        "zip_code": normalize_zip_code(customer.get("zip_code") or row_value(existing, "zip_code") or row_value(existing, "area_zip")),
+        "city": customer.get("city") or city_from_zip(customer.get("zip_code") or row_value(existing, "zip_code") or row_value(existing, "area_zip")) or city_from_address(customer.get("address", "")),
+        "state": customer.get("state") or state_from_zip(customer.get("zip_code") or row_value(existing, "zip_code") or row_value(existing, "area_zip")),
         "products_interest": ", ".join(dict.fromkeys(str(item.get("name", "")) for item in quote.get("items", []) if item.get("name"))),
         "client_type": row_value(existing, "client_type"),
         "client_type_note": row_value(existing, "client_type_note"),
@@ -5149,7 +5303,17 @@ def customer_editor(existing: sqlite3.Row | None = None, form_key: str = "custom
             else:
                 assigned_to = current_employee_name()
                 st.text_input("Owner / sales rep", value=assigned_to, disabled=True)
-        address = st.text_area("Address", value=existing["address"] if is_edit else "", height=80)
+        address_col, zip_col = st.columns([2, 1])
+        with address_col:
+            address = st.text_area("Address", value=existing["address"] if is_edit else "", height=80)
+        with zip_col:
+            zip_default = row_value(existing, "zip_code") or row_value(existing, "area_zip")
+            zip_code = st.text_input("Zipcode", value=zip_default if is_edit else "", placeholder="95112")
+            inferred_city, inferred_state = city_state_from_zip(zip_code)
+            if inferred_city:
+                st.caption(f"City / State: {inferred_city}, {inferred_state}")
+            elif zip_code.strip():
+                st.caption("City / State: Not recognized yet")
         products_interest = st.text_area(
             "Interested products",
             value=existing["products_interest"] if is_edit else "",
@@ -5293,6 +5457,9 @@ def customer_editor(existing: sqlite3.Row | None = None, form_key: str = "custom
                 "email": email.strip(),
                 "phone": format_us_phone(phone),
                 "address": address.strip(),
+                "zip_code": normalize_zip_code(zip_code),
+                "city": city_from_zip(zip_code) or city_from_address(address),
+                "state": state_from_zip(zip_code),
                 "products_interest": products_interest.strip(),
                 "client_type": client_type,
                 "client_type_note": client_type_note.strip(),
@@ -5383,6 +5550,8 @@ def render_customer_basic_info(row: sqlite3.Row, priority_color: str) -> None:
     with basic3:
         st.markdown(f"**Company:** {row['company'] or 'Not set'}")
         st.markdown(f"**Address:** {row['address'] or 'Not set'}")
+        st.markdown(f"**Zipcode:** {row_value(row, 'zip_code') or row_value(row, 'area_zip') or 'Not set'}")
+        st.markdown(f"**City / State:** {customer_city_label(row) or 'Not set'}")
 
     st.markdown("### Project information")
     project1, project2, project3 = st.columns(3)
@@ -5418,6 +5587,10 @@ def render_customer_basic_info_editor(row: sqlite3.Row) -> None:
         with basic3:
             company = st.text_input("Company", value=row["company"] or "")
             address = st.text_area("Address", value=row["address"] or "", height=78)
+            zip_code = st.text_input("Zipcode", value=row_value(row, "zip_code") or row_value(row, "area_zip") or "", placeholder="95112")
+            inferred_city, inferred_state = city_state_from_zip(zip_code)
+            if inferred_city:
+                st.caption(f"City / State: {inferred_city}, {inferred_state}")
 
         st.markdown("### Project information")
         project1, project2, project3 = st.columns(3)
@@ -5485,6 +5658,9 @@ def render_customer_basic_info_editor(row: sqlite3.Row) -> None:
                     "phone": format_us_phone(phone),
                     "company": company.strip(),
                     "address": address.strip(),
+                    "zip_code": normalize_zip_code(zip_code),
+                    "city": city_from_zip(zip_code) or city_from_address(address),
+                    "state": state_from_zip(zip_code),
                     "source": source.strip(),
                     "initial_contact_date": first_inquiry.isoformat(),
                     "next_followup_date": next_followup.isoformat(),
@@ -5899,10 +6075,87 @@ def finance_page() -> None:
     expected_second_amount = sum(float(record["second_payment_amount"]) for record in expected_second)
 
     st.caption(f"Showing {display_date(start.isoformat())} to {display_date(end.isoformat())}. Sales performance uses product amount before sales tax. Expected second payment is based on unpaid second-payment due dates in this calendar month.")
+    if "finance_detail_view" not in st.session_state:
+        st.session_state.finance_detail_view = ""
+
     kpi1, kpi2, kpi3 = st.columns(3)
-    kpi1.metric("Product sales pre-tax", money(product_sales_amount), f"{len(period_orders)} orders")
-    kpi2.metric("Collected in period", money(collected_amount))
-    kpi3.metric("Expected second payment", money(expected_second_amount), f"{len(expected_second)} customers")
+    with kpi1.container(border=True):
+        st.metric("Product sales pre-tax", money(product_sales_amount), f"{len(period_orders)} orders")
+        if st.button("View order details", key="finance-view-period-orders", width="stretch"):
+            st.session_state.finance_detail_view = "period_orders"
+    with kpi2.container(border=True):
+        st.metric("Collected in period", money(collected_amount))
+        if st.button("View collected payments", key="finance-view-collected-payments", width="stretch"):
+            st.session_state.finance_detail_view = "collected"
+    with kpi3.container(border=True):
+        st.metric("Expected second payment", money(expected_second_amount), f"{len(expected_second)} customers")
+        if st.button("View expected payments", key="finance-view-expected-second", width="stretch"):
+            st.session_state.finance_detail_view = "expected_second"
+
+    if st.session_state.finance_detail_view == "period_orders":
+        st.markdown("#### Product sales orders in this period")
+        rows = [
+            {
+                "Customer": record["customer"],
+                "Salesperson": record["sales"],
+                "Order date": display_date(record["order_date"]),
+                "Product sales pre-tax": money(float(record["product_total"])),
+                "Shipping": money(float(record.get("shipping") or 0)),
+                "Installation": money(float(record["installation"])),
+                "Paid total": money(float(record["paid_total"])),
+                "Customer ID": record["customer_id"],
+            }
+            for record in sorted(period_orders, key=lambda item: (item["order_date"] or "", item["customer"]), reverse=True)
+        ]
+        if rows:
+            st.dataframe(rows, hide_index=True, width="stretch")
+        else:
+            st.markdown('<div class="empty">No product sales orders in this period.</div>', unsafe_allow_html=True)
+    elif st.session_state.finance_detail_view == "collected":
+        st.markdown("#### Payments collected in this period")
+        rows = []
+        for record in filtered:
+            if record["first_payment_paid"] and in_date_range(record["first_payment_date"], start, end):
+                rows.append({
+                    "Customer": record["customer"],
+                    "Salesperson": record["sales"],
+                    "Payment": "First payment",
+                    "Payment date": display_date(record["first_payment_date"]),
+                    "Collected amount": money(float(record["first_payment_amount"])),
+                    "Order date": display_date(record["order_date"]),
+                })
+            if record["second_payment_paid"] and in_date_range(record["second_payment_date"], start, end):
+                rows.append({
+                    "Customer": record["customer"],
+                    "Salesperson": record["sales"],
+                    "Payment": "Second payment",
+                    "Payment date": display_date(record["second_payment_date"]),
+                    "Collected amount": money(float(record["second_payment_amount"])),
+                    "Order date": display_date(record["order_date"]),
+                })
+        rows = sorted(rows, key=lambda item: (item["Payment date"], item["Customer"]), reverse=True)
+        if rows:
+            st.dataframe(rows, hide_index=True, width="stretch")
+        else:
+            st.markdown('<div class="empty">No collected payments in this period.</div>', unsafe_allow_html=True)
+    elif st.session_state.finance_detail_view == "expected_second":
+        st.markdown("#### Expected second payments in this period")
+        rows = [
+            {
+                "Due date": display_date(record["second_payment_date"]),
+                "Customer": record["customer"],
+                "Salesperson": record["sales"],
+                "Expected second payment": money(float(record["second_payment_amount"])),
+                "Product sales pre-tax": money(float(record["product_total"])),
+                "Order date": display_date(record["order_date"]),
+                "Customer ID": record["customer_id"],
+            }
+            for record in sorted(expected_second, key=lambda item: (item["second_payment_date"] or "", item["customer"]))
+        ]
+        if rows:
+            st.dataframe(rows, hide_index=True, width="stretch")
+        else:
+            st.markdown('<div class="empty">No expected second payments in this period.</div>', unsafe_allow_html=True)
 
     contribution: dict[str, dict[str, float | int]] = {}
     for record in period_orders:
@@ -6811,6 +7064,10 @@ def configure_page(product: Product) -> None:
                 quick_company = st.text_input("Company", key="quick-customer-company")
                 quick_source = st.text_input("Lead source", value="Catalog", key="quick-customer-source")
                 quick_address = st.text_input("Address", key="quick-customer-address")
+                quick_zip_code = st.text_input("Zipcode", placeholder="95112", key="quick-customer-zip")
+                quick_city, quick_state = city_state_from_zip(quick_zip_code)
+                if quick_city:
+                    st.caption(f"City / State: {quick_city}, {quick_state}")
             submitted_customer = st.form_submit_button("Create and use this customer", type="primary", width="stretch")
             if submitted_customer:
                 if not quick_name.strip():
@@ -6831,6 +7088,9 @@ def configure_page(product: Product) -> None:
                         "email": quick_email.strip(),
                         "phone": format_us_phone(quick_phone),
                         "address": quick_address.strip(),
+                        "zip_code": normalize_zip_code(quick_zip_code),
+                        "city": city_from_zip(quick_zip_code) or city_from_address(quick_address),
+                        "state": state_from_zip(quick_zip_code),
                         "products_interest": product.name,
                         "client_type": "",
                         "client_type_note": "",
@@ -8170,6 +8430,10 @@ def checkout_page() -> None:
             email = st.text_input("Email *", value=active_customer["email"] if active_customer else "")
             phone = st.text_input("Phone *", value=format_us_phone(active_customer["phone"]) if active_customer else "", placeholder="(123) 456-7890", help="Enter a 10-digit US phone number. It will be saved as (123) 456-7890.")
             address = st.text_area("Project / delivery address *", value=active_customer["address"] if active_customer else "")
+            zip_code = st.text_input("Zipcode", value=(row_value(active_customer, "zip_code") or row_value(active_customer, "area_zip")) if active_customer else "", placeholder="95112")
+            checkout_city, checkout_state = city_state_from_zip(zip_code)
+            if checkout_city:
+                st.caption(f"City / State: {checkout_city}, {checkout_state}")
             project_notes = st.text_area("Project notes")
             follow1, follow2 = st.columns(2)
             with follow1:
@@ -8200,7 +8464,16 @@ def checkout_page() -> None:
                     total = float(final_adjustment_snapshot["total"])
                     tax_rate_percent = float(final_adjustment_snapshot["tax_rate_percent"])
                     now = datetime.now()
-                    customer_payload = {"name": name, "company": company, "email": email, "phone": format_us_phone(phone), "address": address}
+                    customer_payload = {
+                        "name": name,
+                        "company": company,
+                        "email": email,
+                        "phone": format_us_phone(phone),
+                        "address": address,
+                        "zip_code": normalize_zip_code(zip_code),
+                        "city": city_from_zip(zip_code) or city_from_address(address),
+                        "state": state_from_zip(zip_code),
+                    }
                     quote_customer_id = st.session_state.active_customer_id
                     if active_customer and not customer_matches_checkout_payload(active_customer, customer_payload):
                         quote_customer_id = None
