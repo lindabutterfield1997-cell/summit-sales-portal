@@ -50,6 +50,7 @@ OUTPUT_DIR = APP_DIR / "output" / "pdf"
 DB_PATH = APP_DIR / "quotes.db"
 DB_TIMEOUT_SECONDS = 30
 AUTH_STORAGE_KEY = "frameflow_employee_daily_auth_v1"
+MAX_ORDER_QUANTITY = 1000
 
 
 def db_connect(*, isolation_level: str | None = "DEFERRED") -> sqlite3.Connection:
@@ -3217,6 +3218,29 @@ def set_active_customer(customer_id: int | None, load_cart: bool = True) -> None
         st.session_state.cart = load_customer_cart(customer_id)
 
 
+def switch_active_customer(customer_id: int | None) -> None:
+    previous_customer_id = st.session_state.get("active_customer_id")
+    current_cart = [dict(item) for item in st.session_state.get("cart", []) if isinstance(item, dict)]
+    if previous_customer_id == customer_id:
+        return
+
+    if previous_customer_id:
+        save_customer_cart(int(previous_customer_id), current_cart)
+        set_active_customer(customer_id)
+        return
+
+    if customer_id and current_cart:
+        saved_cart = load_customer_cart(int(customer_id))
+        merged_cart, _ = merge_duplicate_cart_items(saved_cart + current_cart)
+        set_active_customer(int(customer_id), load_cart=False)
+        st.session_state.cart = merged_cart
+        save_customer_cart(int(customer_id), merged_cart)
+        st.session_state.cart_merge_notice = f"已把临时购物车里的 {len(current_cart)} 个商品合并到 {customer_display_name(int(customer_id))} 的购物车。"
+        return
+
+    set_active_customer(customer_id)
+
+
 def customer_quotes(customer_id: int) -> list[sqlite3.Row]:
     with db_connect() as conn:
         conn.row_factory = sqlite3.Row
@@ -4341,7 +4365,7 @@ def render_wishlist(wishlist: list[dict[str, Any]], selection_key: str = "", tit
                     with edit_cols[1]:
                         new_height = st.number_input("Height (inches)", min_value=12.0, max_value=240.0, value=float(item.get("height") or 96.0), step=0.5, key=f"wishlist-height-{editable_customer_id}-{index - 1}")
                     with edit_cols[2]:
-                        new_quantity = st.number_input("Qty", min_value=1, max_value=99, value=int(item.get("quantity") or 1), step=1, key=f"wishlist-qty-{editable_customer_id}-{index - 1}")
+                        new_quantity = st.number_input("Qty", min_value=1, max_value=MAX_ORDER_QUANTITY, value=int(item.get("quantity") or 1), step=1, key=f"wishlist-qty-{editable_customer_id}-{index - 1}")
                     option_cols = st.columns(4)
                     with option_cols[0]:
                         new_direction = st.selectbox("Opening / handing", direction_options, index=option_index(direction_options, str(item.get("direction") or "")), key=f"wishlist-direction-{editable_customer_id}-{index - 1}")
@@ -7390,9 +7414,11 @@ def configure_page(product: Product) -> None:
                 st.success(f"{quick_name.strip()} created and selected.")
                 st.rerun()
     if selected_customer != (st.session_state.active_customer_id or 0):
-        save_customer_cart(st.session_state.active_customer_id)
-        set_active_customer(selected_customer or None)
+        switch_active_customer(selected_customer or None)
         st.rerun()
+    cart_merge_notice = st.session_state.pop("cart_merge_notice", "")
+    if cart_merge_notice:
+        st.success(cart_merge_notice)
     if st.session_state.active_customer_id:
         st.info(f"Adding items for: {customer_display_name(st.session_state.active_customer_id)}")
     color_choices = product.color_options or product.frame_colors
@@ -7473,7 +7499,7 @@ def configure_page(product: Product) -> None:
             width = st.number_input("Width (inches)", min_value=12.0, max_value=360.0, step=0.5, key=f"config-{product.id}-width")
         with height_col:
             height = st.number_input("Height (inches)", min_value=12.0, max_value=240.0, step=0.5, key=f"config-{product.id}-height")
-        quantity = st.number_input("Quantity", min_value=1, max_value=99, key=f"config-{product.id}-quantity")
+        quantity = st.number_input("Quantity", min_value=1, max_value=MAX_ORDER_QUANTITY, key=f"config-{product.id}-quantity")
         notes = st.text_area("Item notes", placeholder="Hardware, project room, special requirements…", key=f"config-{product.id}-notes")
         unit_price, breakdown = price_product(product, width, height, glass, frame)
         if product.base_rate > 0:
@@ -7603,8 +7629,11 @@ def cart_page() -> None:
         help="Choose the customer you are shopping for. Their saved cart will load here.",
     )
     if selected_customer != (st.session_state.active_customer_id or 0):
-        set_active_customer(selected_customer or None)
+        switch_active_customer(selected_customer or None)
         st.rerun()
+    cart_merge_notice = st.session_state.pop("cart_merge_notice", "")
+    if cart_merge_notice:
+        st.success(cart_merge_notice)
     if st.session_state.active_customer_id:
         st.success(f"Current cart is linked to {customer_display_name(st.session_state.active_customer_id)}.")
     if not st.session_state.cart:
@@ -7678,7 +7707,7 @@ def cart_page() -> None:
                             cart_quantity = st.number_input(
                                 "Qty",
                                 min_value=1,
-                                max_value=99,
+                                max_value=MAX_ORDER_QUANTITY,
                                 value=int(item.get("quantity") or 1),
                                 step=1,
                                 key=f"cart-qty-{line_id}",
