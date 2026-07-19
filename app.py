@@ -198,7 +198,6 @@ def init_state() -> None:
         "admin_editor_id": None,
         "customer_editor_id": None,
         "inline_customer_editor_id": None,
-        "focus_customer_id": None,
         "inventory_editor_id": None,
         "service_customer_id": None,
         "service_editor_id": None,
@@ -5873,8 +5872,7 @@ def customer_card(row: sqlite3.Row) -> None:
     owner_title = f" ｜ {row_value(row, 'assigned_to') or 'Unassigned'}" if is_manager_user() else ""
     title = f"{row['name']}{city_title} ｜ {customer_title_detail(row)}{owner_title}"
     is_inline_editing = st.session_state.get("inline_customer_editor_id") == int(row["id"])
-    is_focused = st.session_state.get("focus_customer_id") == int(row["id"])
-    with st.expander(title, expanded=is_inline_editing or is_focused):
+    with st.expander(title, expanded=is_inline_editing):
         if is_manager_user():
             owner_options = customer_owner_options(row_value(row, "assigned_to"))
             owner_col, assign_col, save_owner_col = st.columns([1.1, 1.2, 0.7], vertical_alignment="bottom")
@@ -6127,26 +6125,8 @@ def customers_page() -> None:
         st.caption("Customer database: Supabase connected. New customers and customer edits should be saved to the backend database.")
     else:
         st.warning("Customer database is not connected to Supabase. Customers created now will be saved locally only and will not appear in the Supabase backend.")
-    focused_customer_id = st.session_state.get("focus_customer_id")
-    if focused_customer_id:
-        focused_customer = customer_by_id(int(focused_customer_id))
-        if focused_customer:
-            left, right = st.columns([3, 1], vertical_alignment="center")
-            left.info(f"Showing customer from Finance: {row_value(focused_customer, 'name', 'Customer')}.")
-            if right.button("Show all customers", width="stretch"):
-                st.session_state.focus_customer_id = None
-                clear_customer_query_params()
-                st.rerun()
-            customer_summary_metrics([focused_customer])
-            st.write("")
-            customer_card(focused_customer)
-            return
-        else:
-            st.session_state.focus_customer_id = None
-            rows = customer_rows()
-    else:
-        search = st.text_input("Search customers", placeholder="Search name, email, phone, address or interested products...")
-        rows = customer_rows(search=search.strip())
+    search = st.text_input("Search customers", placeholder="Search name, email, phone, address or interested products...")
+    rows = customer_rows(search=search.strip())
     customer_summary_metrics(rows)
     st.write("")
 
@@ -6237,40 +6217,6 @@ def query_param_value(name: str) -> str:
         return str(value[0] if value else "")
     return str(value or "")
 
-
-def apply_query_params_to_state() -> None:
-    page = query_param_value("page")
-    customer_id = query_param_value("customer_id")
-    if page == "Customers" and customer_id.isdigit():
-        st.session_state.page = "Customers"
-        st.session_state.focus_customer_id = int(customer_id)
-        st.session_state.inline_customer_editor_id = None
-        st.session_state.customer_editor_id = None
-
-
-def clear_customer_query_params() -> None:
-    try:
-        st.query_params.clear()
-    except Exception:
-        pass
-
-
-def customer_detail_href(customer_id: int) -> str:
-    return f"?page=Customers&customer_id={int(customer_id)}"
-
-
-def customer_detail_link(customer_id: int, customer_name: str) -> str:
-    safe_name = html.escape(str(customer_name or "Customer"))
-    href = html.escape(customer_detail_href(int(customer_id)), quote=True)
-    return f'<a href="{href}" target="_blank" rel="noopener noreferrer" style="font-weight:800;color:#1f3d2f;text-decoration:underline;text-underline-offset:3px">{safe_name}</a>'
-
-
-def open_customer_from_finance(customer_id: int) -> None:
-    st.session_state.focus_customer_id = int(customer_id)
-    st.session_state.inline_customer_editor_id = None
-    st.session_state.customer_editor_id = None
-    st.session_state.page = "Customers"
-    st.rerun()
 
 
 def finance_customer_detail_table(rows: list[dict[str, Any]], empty_message: str) -> None:
@@ -7032,7 +6978,10 @@ def top_nav() -> None:
             st.session_state.active_customer_id = None
             st.session_state.customer_editor_id = None
             st.session_state.inline_customer_editor_id = None
-            clear_customer_query_params()
+            try:
+                st.query_params.clear()
+            except Exception:
+                pass
             st.session_state.service_customer_id = None
             st.session_state.cart = []
             st.rerun()
@@ -9122,7 +9071,6 @@ def main() -> None:
         st.markdown('<div class="footer">FRAMEFLOW · EMPLOYEE ACCESS REQUIRED</div>', unsafe_allow_html=True)
         return
     persist_daily_login_script(current_employee_name())
-    apply_query_params_to_state()
     # Phone numbers are formatted on save/quote generation.
     # The live browser mask is disabled because it can interrupt Streamlit text input.
     init_db()
