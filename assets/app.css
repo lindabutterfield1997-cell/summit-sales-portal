@@ -1,0 +1,42 @@
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@500;600;700&display=swap');
+:root { --ink:#17201c; --muted:#69716d; --line:#dfe4e0; --paper:#f7f8f5; --sage:#dbe5dc; --dark:#1e2b25; }
+html, body, [class*="css"] { font-family:'DM Sans',sans-serif; }
+.stApp { background:#f7f8f5; color:var(--ink); }
+.block-container { padding-top:1.15rem; padding-bottom:5rem; max-width:1440px; }
+h1,h2,h3 { font-family:'Manrope',sans-serif; letter-spacing:-.035em; }
+[data-testid="stHeader"] { background:transparent; height:0; pointer-events:none; }
+[data-testid="stToolbar"], [data-testid="stDecoration"], [data-testid="stStatusWidget"] { display:none; }
+.brand { display:flex; align-items:center; gap:12px; font:700 20px 'Manrope'; }
+.mark { width:34px;height:34px;background:#23342c;color:white;border-radius:10px;display:grid;place-items:center;font-size:17px; }
+.topbar { display:flex; justify-content:space-between; align-items:center; padding:4px 2px 16px; border-bottom:1px solid var(--line); margin-bottom:18px; }
+.eyebrow { font-size:12px;text-transform:uppercase;letter-spacing:.14em;color:#68736d;font-weight:700; }
+.hero { background:#e5ebe5; border-radius:24px; padding:38px 42px; margin:8px 0 24px; border:1px solid #d8dfd9; }
+.hero h1 { font-size:48px;max-width:760px;margin:8px 0 12px;line-height:1.06; }
+.hero p { color:#59635e;max-width:650px;font-size:17px;margin:0; }
+.product-card { background:white;border:1px solid var(--line);border-radius:18px;padding:12px;margin-bottom:10px;min-height:222px; }
+.product-card h3 { font-size:18px;margin:11px 0 2px; }
+.product-card p { color:var(--muted);font-size:13px;margin:0 0 8px; }
+.product-card .price { font-size:13px;color:#33483e;font-weight:700; }
+.opening-heading { font:800 22px 'Manrope'; margin:6px 0 12px; letter-spacing:0; }
+.opening-card { background:#fff;border:1px solid #e4e7e3;border-radius:8px;padding:12px 10px 8px;text-align:center;min-height:132px;display:grid;place-items:center; }
+.opening-card.active { border:2px solid #23342c;background:#f2f5f1; }
+.opening-card-title { font:800 14px 'Manrope'; color:#111; margin-top:7px; min-height:32px; display:flex; align-items:center; justify-content:center; line-height:1.12; }
+.opening-card img { width:96px; height:76px; object-fit:contain; margin:0 auto; display:block; }
+.direction-visual { background:#fff;border:1px solid #dfe4e0;border-radius:14px;padding:12px 14px;margin:10px 0 14px;display:flex;gap:14px;align-items:center; }
+.direction-visual img { width:168px;max-width:42%;height:auto;object-fit:contain;border-radius:10px;background:#f8faf9; }
+.direction-visual-title { font:800 14px 'Manrope';color:#17201c;margin-bottom:3px; }
+.direction-visual-copy { color:#65706a;font-size:12.5px;line-height:1.35; }
+div[data-testid="stImage"] img { aspect-ratio:3/2; object-fit:cover; }
+.pill { display:inline-block;border:1px solid #cad4cd;border-radius:999px;padding:6px 11px;font-size:12px;margin:2px 5px 2px 0;background:#fff; }
+.summary-card { background:#202e27;color:white;border-radius:20px;padding:22px;position:sticky;top:70px; }
+.summary-card .muted { color:#b9c7bf;font-size:13px; }
+.summary-card .total { font:700 29px 'Manrope';margin-top:8px; }
+.empty { padding:34px;border:1px dashed #bdc8c0;border-radius:18px;text-align:center;color:#6c756f;background:#fbfcfa; }
+.quote-head { background:#25362e;color:white;padding:26px;border-radius:20px;margin-bottom:18px; }
+div[data-testid="stButton"] button { border-radius:10px;font-weight:650;min-height:42px; }
+div[data-testid="stFormSubmitButton"] button { background:#23342c;color:white;border:none; }
+div[data-testid="stDownloadButton"] button { width:100%;background:#dbe5dc;color:#203128;border:none; }
+[data-testid="stMetric"] { background:white;border:1px solid var(--line);padding:14px;border-radius:14px; }
+.thumb-note { color:#7a827e;font-size:12px;margin-top:-4px; }
+.footer { color:#818983;text-align:center;border-top:1px solid var(--line);padding-top:22px;margin-top:50px;font-size:12px; }
+@media(max-width:800px){ .hero{padding:25px}.hero h1{font-size:34px}.block-container{padding-left:1rem;padding-right:1rem} }

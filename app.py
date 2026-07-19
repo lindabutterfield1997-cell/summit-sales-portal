@@ -3,7 +3,6 @@ from __future__ import annotations
 import base64
 import csv
 import hashlib
-import hmac
 import html
 import io
 import json
@@ -12,15 +11,14 @@ import re
 import secrets
 import smtplib
 import sqlite3
-from dataclasses import asdict, dataclass, fields
+from dataclasses import asdict, fields
 from datetime import date, datetime, timedelta
 from email.message import EmailMessage
 from pathlib import Path
 from typing import Any, Sequence
-from urllib import error as url_error, parse, request as url_request
+from urllib import parse
 
 import streamlit as st
-import streamlit.components.v1 as components
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 from reportlab.lib import colors
 from reportlab.lib.enums import TA_LEFT, TA_RIGHT
@@ -29,7 +27,6 @@ from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import inch
 from reportlab.platypus import (
     Image as RLImage,
-    PageBreak,
     Paragraph,
     SimpleDocTemplate,
     Spacer,
@@ -37,20 +34,59 @@ from reportlab.platypus import (
     TableStyle,
 )
 
-
-APP_DIR = Path(__file__).resolve().parent
-ASSET_DIR = APP_DIR / "assets" / "products"
-UPLOAD_DIR = ASSET_DIR / "uploads"
-ORIGINAL_UPLOAD_DIR = ASSET_DIR / "originals"
-DATA_DIR = APP_DIR / "data"
-PRODUCT_FILE = DATA_DIR / "products.json"
-IMAGE_MIGRATION_MARKER = DATA_DIR / ".image-ratio-3x2-v1"
-PRODUCT_IMAGE_SIZE = (1500, 1000)
-OUTPUT_DIR = APP_DIR / "output" / "pdf"
-DB_PATH = APP_DIR / "quotes.db"
-DB_TIMEOUT_SECONDS = 30
-AUTH_STORAGE_KEY = "frameflow_employee_daily_auth_v1"
-MAX_ORDER_QUANTITY = 1000
+from frameflow.auth import (
+    admin_password,
+    authenticate_from_daily_query,
+    canonical_employee_name,
+    clear_daily_login_script,
+    current_employee_name,
+    customer_owner_filter,
+    customer_owner_options,
+    default_customer_owner,
+    employee_login_page,
+    is_manager_user,
+    persist_daily_login_script,
+)
+from frameflow.formatting import (
+    date_from_iso,
+    display_date,
+    format_us_phone,
+    is_valid_us_phone,
+    money,
+    row_value,
+    today_iso,
+)
+from frameflow.models import Product
+from frameflow.settings import (
+    APP_DIR,
+    ASSET_DIR,
+    BRAND_BLUE,
+    BRAND_LIGHT,
+    BRAND_LINE,
+    COMPANY_LOGO_PATH,
+    COMPANY_NAME,
+    DATA_DIR,
+    DB_PATH,
+    DB_TIMEOUT_SECONDS,
+    DEPOSIT_REFUND_NOTICE,
+    FACTORY_ORDER_COMMISSION_RATE,
+    FINANCE_COMMISSION_ENABLED,
+    FIXED_SALES_TAX_RATE,
+    IMAGE_MIGRATION_MARKER,
+    MAX_ORDER_QUANTITY,
+    OPENING_DIRECTION_DIR,
+    OPENING_STYLE_DIR,
+    ORIGINAL_UPLOAD_DIR,
+    OUTPUT_DIR,
+    PRODUCT_FILE,
+    PRODUCT_IMAGE_SIZE,
+    STOCK_COMMISSION_RATE,
+    UPLOAD_DIR,
+)
+from frameflow.supabase_client import (
+    configured as supabase_configured,
+    request as supabase_request,
+)
 
 
 def db_connect(*, isolation_level: str | None = "DEFERRED") -> sqlite3.Connection:
@@ -59,52 +95,12 @@ def db_connect(*, isolation_level: str | None = "DEFERRED") -> sqlite3.Connectio
     conn.execute("PRAGMA foreign_keys = ON")
     return conn
 
-
-OPENING_STYLE_DIR = APP_DIR / "assets" / "opening_styles"
-OPENING_DIRECTION_DIR = APP_DIR / "assets" / "opening_directions"
-BRANDING_DIR = APP_DIR / "assets" / "branding"
-COMPANY_LOGO_PATH = BRANDING_DIR / "summit-logo.png"
-COMPANY_NAME = "SUMMIT Windows & Doors"
-BRAND_BLUE = "#252B60"
-BRAND_SKY = "#22ADD7"
-BRAND_LIGHT = "#EAF4FA"
-BRAND_LINE = "#9FB7CC"
-FIXED_SALES_TAX_RATE = 0.0775
-# Commission logic is prepared but intentionally disabled until inventory data is complete.
-FINANCE_COMMISSION_ENABLED = False
-STOCK_COMMISSION_RATE = 0.05
-FACTORY_ORDER_COMMISSION_RATE = 0.08
-DEPOSIT_REFUND_NOTICE = "Deposit is non-refundable. Custom orders are not returnable or exchangeable once the deposit is paid, except as required by applicable law or agreed in writing by SUMMIT Windows & Doors."
-
 st.set_page_config(
     page_title="FrameFlow | Doors & Windows",
     page_icon="▦",
     layout="wide",
     initial_sidebar_state="collapsed",
 )
-
-
-@dataclass(frozen=True)
-class Product:
-    id: str
-    section: str
-    category: str
-    name: str
-    subtitle: str
-    description: str
-    base_rate: float
-    minimum_price: float
-    directions: tuple[str, ...]
-    glass_colors: tuple[str, ...]
-    frame_colors: tuple[str, ...]
-    accent: str
-    hero_image: str = ""
-    detail_images: tuple[str, ...] = ()
-    active: bool = True
-    updated_at: str = ""
-    color_options: tuple[str, ...] = ()
-    color_information: str = ""
-    stock_information: str = ""
 
 
 DEFAULT_PRODUCTS: list[Product] = []
@@ -133,55 +129,8 @@ OPENING_STYLES = {
 
 
 def css() -> None:
-    st.markdown(
-        """
-        <style>
-        @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@500;600;700&display=swap');
-        :root { --ink:#17201c; --muted:#69716d; --line:#dfe4e0; --paper:#f7f8f5; --sage:#dbe5dc; --dark:#1e2b25; }
-        html, body, [class*="css"] { font-family:'DM Sans',sans-serif; }
-        .stApp { background:#f7f8f5; color:var(--ink); }
-        .block-container { padding-top:1.15rem; padding-bottom:5rem; max-width:1440px; }
-        h1,h2,h3 { font-family:'Manrope',sans-serif; letter-spacing:-.035em; }
-        [data-testid="stHeader"] { background:transparent; height:0; pointer-events:none; }
-        [data-testid="stToolbar"], [data-testid="stDecoration"], [data-testid="stStatusWidget"] { display:none; }
-        .brand { display:flex; align-items:center; gap:12px; font:700 20px 'Manrope'; }
-        .mark { width:34px;height:34px;background:#23342c;color:white;border-radius:10px;display:grid;place-items:center;font-size:17px; }
-        .topbar { display:flex; justify-content:space-between; align-items:center; padding:4px 2px 16px; border-bottom:1px solid var(--line); margin-bottom:18px; }
-        .eyebrow { font-size:12px;text-transform:uppercase;letter-spacing:.14em;color:#68736d;font-weight:700; }
-        .hero { background:#e5ebe5; border-radius:24px; padding:38px 42px; margin:8px 0 24px; border:1px solid #d8dfd9; }
-        .hero h1 { font-size:48px;max-width:760px;margin:8px 0 12px;line-height:1.06; }
-        .hero p { color:#59635e;max-width:650px;font-size:17px;margin:0; }
-        .product-card { background:white;border:1px solid var(--line);border-radius:18px;padding:12px;margin-bottom:10px;min-height:222px; }
-        .product-card h3 { font-size:18px;margin:11px 0 2px; }
-        .product-card p { color:var(--muted);font-size:13px;margin:0 0 8px; }
-        .product-card .price { font-size:13px;color:#33483e;font-weight:700; }
-        .opening-heading { font:800 22px 'Manrope'; margin:6px 0 12px; letter-spacing:0; }
-        .opening-card { background:#fff;border:1px solid #e4e7e3;border-radius:8px;padding:12px 10px 8px;text-align:center;min-height:132px;display:grid;place-items:center; }
-        .opening-card.active { border:2px solid #23342c;background:#f2f5f1; }
-        .opening-card-title { font:800 14px 'Manrope'; color:#111; margin-top:7px; min-height:32px; display:flex; align-items:center; justify-content:center; line-height:1.12; }
-        .opening-card img { width:96px; height:76px; object-fit:contain; margin:0 auto; display:block; }
-        .direction-visual { background:#fff;border:1px solid #dfe4e0;border-radius:14px;padding:12px 14px;margin:10px 0 14px;display:flex;gap:14px;align-items:center; }
-        .direction-visual img { width:168px;max-width:42%;height:auto;object-fit:contain;border-radius:10px;background:#f8faf9; }
-        .direction-visual-title { font:800 14px 'Manrope';color:#17201c;margin-bottom:3px; }
-        .direction-visual-copy { color:#65706a;font-size:12.5px;line-height:1.35; }
-        div[data-testid="stImage"] img { aspect-ratio:3/2; object-fit:cover; }
-        .pill { display:inline-block;border:1px solid #cad4cd;border-radius:999px;padding:6px 11px;font-size:12px;margin:2px 5px 2px 0;background:#fff; }
-        .summary-card { background:#202e27;color:white;border-radius:20px;padding:22px;position:sticky;top:70px; }
-        .summary-card .muted { color:#b9c7bf;font-size:13px; }
-        .summary-card .total { font:700 29px 'Manrope';margin-top:8px; }
-        .empty { padding:34px;border:1px dashed #bdc8c0;border-radius:18px;text-align:center;color:#6c756f;background:#fbfcfa; }
-        .quote-head { background:#25362e;color:white;padding:26px;border-radius:20px;margin-bottom:18px; }
-        div[data-testid="stButton"] button { border-radius:10px;font-weight:650;min-height:42px; }
-        div[data-testid="stFormSubmitButton"] button { background:#23342c;color:white;border:none; }
-        div[data-testid="stDownloadButton"] button { width:100%;background:#dbe5dc;color:#203128;border:none; }
-        [data-testid="stMetric"] { background:white;border:1px solid var(--line);padding:14px;border-radius:14px; }
-        .thumb-note { color:#7a827e;font-size:12px;margin-top:-4px; }
-        .footer { color:#818983;text-align:center;border-top:1px solid var(--line);padding-top:22px;margin-top:50px;font-size:12px; }
-        @media(max-width:800px){ .hero{padding:25px}.hero h1{font-size:34px}.block-container{padding-left:1rem;padding-right:1rem} }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
+    stylesheet = (APP_DIR / "assets" / "app.css").read_text(encoding="utf-8")
+    st.markdown(f"<style>{stylesheet}</style>", unsafe_allow_html=True)
 
 
 def init_state() -> None:
@@ -521,18 +470,6 @@ def hide_placeholder_products(products: list[Product]) -> list[Product]:
     return cleaned
 
 
-def is_pivot_door(product: Product) -> bool:
-    return product.section == "Doors" and "pivot" in product.category.lower()
-
-
-def is_hinge_door(product: Product) -> bool:
-    return product.section == "Doors" and "hinge" in product.category.lower()
-
-
-def door_priced_product(product: Product) -> Product:
-    return product
-
-
 def apply_door_pricing_policy(products: list[Product]) -> list[Product]:
     # Catalog pricing is admin-managed. Startup should never rewrite saved rates or minimums.
     return list(products)
@@ -614,50 +551,6 @@ def image_path(product: Product, variant: str) -> Path:
 def detail_image_paths(product: Product) -> list[Path]:
     filenames = product.detail_images or (f"{product.id.lower()}-detail.png",)
     return [ASSET_DIR / filename for filename in filenames if (ASSET_DIR / filename).exists()]
-
-
-def make_product_image(product: Product, variant: str) -> None:
-    path = image_path(product, variant)
-    if path.exists():
-        return
-    ASSET_DIR.mkdir(parents=True, exist_ok=True)
-    width, height = (1200, 760) if variant == "hero" else (1200, 760)
-    image = Image.new("RGB", (width, height), product.accent)
-    draw = ImageDraw.Draw(image)
-    pale = "#e7ece8"
-    dark = "#253029"
-    glass = "#b7c8c8"
-    # Abstract architectural room
-    draw.rectangle((0, 0, width, 470), fill=pale)
-    draw.rectangle((0, 470, width, height), fill="#c8bca9")
-    draw.polygon([(0, 470), (width, 390), (width, height), (0, height)], fill="#bcae9b")
-    if variant == "hero":
-        x1, y1, x2, y2 = 350, 115, 920, 625
-        draw.rectangle((x1, y1, x2, y2), fill=dark)
-        draw.rectangle((x1 + 24, y1 + 24, x2 - 24, y2 - 24), fill=glass)
-        panels = 4 if "Bifold" in product.category else 2
-        for i in range(1, panels):
-            x = x1 + (x2 - x1) * i // panels
-            draw.line((x, y1, x, y2), fill=dark, width=14)
-        draw.ellipse((120, 390, 290, 560), fill="#6f806f")
-        draw.rectangle((178, 540, 234, 665), fill="#775d45")
-    else:
-        draw.rectangle((130, 100, 1070, 645), fill="#f4f5f2", outline=dark, width=18)
-        draw.rectangle((210, 175, 990, 565), fill=glass, outline=dark, width=14)
-        draw.line((600, 175, 600, 565), fill=dark, width=12)
-        draw.rounded_rectangle((560, 350, 640, 378), 10, fill="#a08153")
-        draw.line((210, 610, 990, 610), fill="#738078", width=3)
-    try:
-        font_big = ImageFont.truetype("/System/Library/Fonts/Supplemental/Arial Bold.ttf", 38)
-        font_small = ImageFont.truetype("/System/Library/Fonts/Supplemental/Arial.ttf", 22)
-    except OSError:
-        font_big = ImageFont.load_default()
-        font_small = ImageFont.load_default()
-    draw.rounded_rectangle((40, 35, 500, 130), 18, fill="#ffffffdd")
-    draw.text((68, 52), product.name, fill=dark, font=font_big)
-    draw.text((70, 98), "Room view" if variant == "hero" else "Product detail", fill="#59645e", font=font_small)
-    image = ImageOps.fit(image, PRODUCT_IMAGE_SIZE, method=Image.Resampling.LANCZOS)
-    image.save(path, quality=92)
 
 
 def opening_style_path(icon_id: str) -> Path:
@@ -1012,275 +905,6 @@ def normalize_existing_catalog_images() -> None:
     IMAGE_MIGRATION_MARKER.write_text("All catalog images normalized to 1500x1000 (3:2).\n", encoding="utf-8")
 
 
-def admin_password() -> str:
-    try:
-        return str(st.secrets["ADMIN_PASSWORD"])
-    except Exception:
-        return os.getenv("ADMIN_PASSWORD", "frameflow-admin")
-
-
-def employee_credentials() -> dict[str, str]:
-    credentials: dict[str, str] = {}
-    try:
-        users = st.secrets["EMPLOYEE_USERS"]
-        for username in users:
-            credentials[str(username)] = str(users[username])
-    except Exception:
-        pass
-    try:
-        shared_password = str(st.secrets["EMPLOYEE_PASSWORD"])
-    except Exception:
-        shared_password = os.getenv("EMPLOYEE_PASSWORD", "")
-    if shared_password:
-        credentials.setdefault("team", shared_password)
-    default_sales_accounts = {
-        "Mia": "frameflow-mia",
-        "Ethan": "frameflow-ethan",
-        "Zane": "frameflow-zane",
-        "Tony": "frameflow-tony",
-        "Liyao": "frameflow-liyao",
-        "Kevin": "frameflow-kevin",
-    }
-    if not credentials:
-        credentials.update(default_sales_accounts)
-    return credentials
-
-
-def using_default_employee_login() -> bool:
-    return employee_credentials() == {
-        "Mia": "frameflow-mia",
-        "Ethan": "frameflow-ethan",
-        "Zane": "frameflow-zane",
-        "Tony": "frameflow-tony",
-        "Liyao": "frameflow-liyao",
-        "Kevin": "frameflow-kevin",
-    }
-
-
-SALES_ACCOUNTS = ("Mia", "Ethan", "Zane", "Tony", "Liyao")
-KNOWN_EMPLOYEE_NAMES = ("Mia", "Ethan", "Zane", "Tony", "Liyao", "Kevin")
-
-
-def canonical_employee_name(username: str) -> str:
-    cleaned = str(username or "").strip()
-    lowered = cleaned.lower()
-    if not lowered:
-        return ""
-    for known_name in KNOWN_EMPLOYEE_NAMES:
-        if known_name.lower() == lowered:
-            return known_name
-    for stored_username in employee_credentials():
-        if stored_username.lower() == lowered:
-            return stored_username
-    return cleaned
-
-
-def manager_accounts() -> set[str]:
-    try:
-        configured = st.secrets["MANAGER_USERS"]
-        if isinstance(configured, str):
-            return {canonical_employee_name(configured)}
-        return {canonical_employee_name(str(username)) for username in configured if str(username).strip()}
-    except Exception:
-        raw = os.getenv("MANAGER_USERS", "")
-    if raw:
-        return {canonical_employee_name(username) for username in re.split(r"[,;\n]", raw) if username.strip()}
-    return {"Kevin"} if using_default_employee_login() else set()
-
-
-def current_employee_name() -> str:
-    return canonical_employee_name(str(st.session_state.get("employee_name", "") or ""))
-
-
-def is_manager_user(username: str | None = None) -> bool:
-    name = canonical_employee_name(username or current_employee_name())
-    return any(manager.lower() == name.lower() for manager in manager_accounts())
-
-
-def customer_owner_filter() -> str:
-    return "" if is_manager_user() else current_employee_name()
-
-
-def customer_owner_options(current: str | None = "") -> tuple[str, ...]:
-    current_value = canonical_employee_name(current or "")
-    options = list(SALES_ACCOUNTS)
-    for manager_name in sorted(manager_accounts()):
-        if manager_name and manager_name not in options:
-            options.append(manager_name)
-    if current_value and current_value not in options:
-        options.append(current_value)
-    return tuple(options)
-
-
-def default_customer_owner() -> str:
-    employee = current_employee_name()
-    if employee:
-        return employee
-    return SALES_ACCOUNTS[-1] if SALES_ACCOUNTS else ""
-
-
-def valid_employee_login(username: str, password: str) -> bool:
-    credentials = employee_credentials()
-    username = username.strip()
-    if username in credentials:
-        return secrets.compare_digest(password, credentials[username])
-    lowered = username.lower()
-    for stored_username, stored_password in credentials.items():
-        if stored_username.lower() == lowered:
-            return secrets.compare_digest(password, stored_password)
-    return False
-
-
-def daily_auth_secret() -> str:
-    configured = secret_or_env("DAILY_AUTH_SECRET")
-    if configured:
-        return configured
-    credentials_blob = json.dumps(employee_credentials(), sort_keys=True)
-    return hashlib.sha256(f"{credentials_blob}|{admin_password()}|{COMPANY_NAME}".encode("utf-8")).hexdigest()
-
-
-def daily_auth_token(username: str, auth_day: str | None = None) -> str:
-    normalized = canonical_employee_name(username)
-    day_value = auth_day or today_iso()
-    message = f"{day_value}|{normalized}".encode("utf-8")
-    return hmac.new(daily_auth_secret().encode("utf-8"), message, hashlib.sha256).hexdigest()
-
-
-def valid_daily_auth_token(username: str, token: str, auth_day: str | None = None) -> bool:
-    normalized = canonical_employee_name(username)
-    if not normalized or not token:
-        return False
-    if normalized not in {canonical_employee_name(name) for name in employee_credentials()}:
-        return False
-    expected = daily_auth_token(normalized, auth_day or today_iso())
-    return secrets.compare_digest(str(token), expected)
-
-
-def persist_daily_login_script(username: str) -> None:
-    normalized = canonical_employee_name(username)
-    if not normalized:
-        return
-    payload = {"user": normalized, "day": today_iso(), "token": daily_auth_token(normalized)}
-    components.html(
-        f"""
-        <script>
-        (() => {{
-          try {{
-            const key = {json.dumps(AUTH_STORAGE_KEY)};
-            const value = {json.dumps(json.dumps(payload))};
-            window.parent.localStorage.setItem(key, value);
-            window.parent.document.cookie = key + '=' + encodeURIComponent(value) + '; Max-Age=86400; Path=/; SameSite=Lax';
-          }} catch (err) {{}}
-        }})();
-        </script>
-        """,
-        height=0,
-        width=0,
-    )
-
-
-def restore_daily_login_script() -> None:
-    components.html(
-        f"""
-        <script>
-        (() => {{
-          try {{
-            const key = {json.dumps(AUTH_STORAGE_KEY)};
-            const cookieRaw = () => {{
-              const prefix = key + '=';
-              const found = (window.parent.document.cookie || '').split('; ').find(part => part.startsWith(prefix));
-              return found ? decodeURIComponent(found.slice(prefix.length)) : '';
-            }};
-            const raw = window.parent.localStorage.getItem(key) || cookieRaw();
-            if (!raw) return;
-            const saved = JSON.parse(raw);
-            const today = new Date().toISOString().slice(0, 10);
-            if (!saved || saved.day !== today || !saved.user || !saved.token) {{
-              window.parent.localStorage.removeItem(key);
-              window.parent.document.cookie = key + '=; Max-Age=0; Path=/; SameSite=Lax';
-              return;
-            }}
-            window.parent.localStorage.setItem(key, raw);
-            const url = new URL(window.parent.location.href);
-            if (url.searchParams.get('auth_user') === saved.user && url.searchParams.get('auth_token') === saved.token) return;
-            url.searchParams.set('auth_user', saved.user);
-            url.searchParams.set('auth_token', saved.token);
-            window.parent.location.replace(url.toString());
-          }} catch (err) {{}}
-        }})();
-        </script>
-        """,
-        height=0,
-        width=0,
-    )
-
-
-def clear_daily_login_script() -> None:
-    components.html(
-        f"""
-        <script>
-        (() => {{
-          try {{
-            const key = {json.dumps(AUTH_STORAGE_KEY)};
-            window.parent.localStorage.removeItem(key);
-            window.parent.document.cookie = key + '=; Max-Age=0; Path=/; SameSite=Lax';
-          }} catch (err) {{}}
-        }})();
-        </script>
-        """,
-        height=0,
-        width=0,
-    )
-
-
-def authenticate_from_daily_query() -> None:
-    if st.session_state.get("employee_authenticated"):
-        return
-    username = query_param_value("auth_user")
-    token = query_param_value("auth_token")
-    if valid_daily_auth_token(username, token):
-        st.session_state.employee_authenticated = True
-        st.session_state.employee_name = canonical_employee_name(username)
-
-
-def employee_login_page() -> None:
-    restore_daily_login_script()
-    st.markdown(
-        """
-        <div class="hero">
-          <div class="eyebrow">Employee access</div>
-          <h1>Employee Login</h1>
-          <p>Sign in to view customer records, quotes, inventory, and service records.</p>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-    if using_default_employee_login():
-        st.warning("Default sales accounts are active. Set EMPLOYEE_PASSWORD or [EMPLOYEE_USERS] in Secrets before publishing this website.")
-    left, middle, right = st.columns([1, 1.15, 1])
-    with middle:
-        with st.form("employee-login"):
-            username = st.text_input("Username", value="Liyao" if using_default_employee_login() else "")
-            password = st.text_input("Password", type="password")
-            login = st.form_submit_button("Sign in", type="primary", width="stretch")
-            if login:
-                if valid_employee_login(username, password):
-                    normalized_username = canonical_employee_name(username)
-                    st.session_state.employee_authenticated = True
-                    st.session_state.employee_name = normalized_username
-                    st.session_state.active_customer_id = None
-                    st.session_state.cart = []
-                    persist_daily_login_script(normalized_username)
-                    try:
-                        st.query_params["auth_user"] = normalized_username
-                        st.query_params["auth_token"] = daily_auth_token(normalized_username)
-                    except Exception:
-                        pass
-                    st.rerun()
-                else:
-                    st.error("Incorrect username or password.")
-
-
 def most_recent_product() -> Product | None:
     dated = [product for product in PRODUCTS if product.updated_at]
     if dated:
@@ -1291,92 +915,6 @@ def most_recent_product() -> Product | None:
         if path.exists() and "uploads/" in product.hero_image:
             candidates.append((path.stat().st_mtime, product))
     return max(candidates, key=lambda item: item[0])[1] if candidates else None
-
-
-def money(value: float) -> str:
-    return f"${value:,.2f}"
-
-
-def phone_digits(value: Any) -> str:
-    return "".join(ch for ch in str(value or "") if ch.isdigit())
-
-
-def format_us_phone(value: Any) -> str:
-    raw = str(value or "").strip()
-    digits = phone_digits(raw)
-    if len(digits) == 11 and digits.startswith("1"):
-        digits = digits[1:]
-    if len(digits) == 10:
-        return f"({digits[:3]}) {digits[3:6]}-{digits[6:]}"
-    return raw
-
-
-def is_valid_us_phone(value: Any) -> bool:
-    digits = phone_digits(value)
-    if len(digits) == 11 and digits.startswith("1"):
-        digits = digits[1:]
-    return len(digits) == 10
-
-
-def phone_input_mask() -> None:
-    components.html(
-        """
-        <script>
-        (() => {
-          const formatPhone = (raw) => {
-            let digits = (raw || '').replace(/\\D/g, '');
-            if (digits.length === 11 && digits.startsWith('1')) digits = digits.slice(1);
-            digits = digits.slice(0, 10);
-            if (digits.length <= 3) return digits ? `(${digits}` : '';
-            if (digits.length <= 6) return `(${digits.slice(0, 3)}) ${digits.slice(3)}`;
-            return `(${digits.slice(0, 3)}) ${digits.slice(3, 6)}-${digits.slice(6)}`;
-          };
-
-          const markPhoneInputs = () => {
-            const doc = window.parent?.document || document;
-            const labels = Array.from(doc.querySelectorAll('label'));
-            labels.forEach((label) => {
-              const text = (label.innerText || '').trim().toLowerCase();
-              if (!text.startsWith('phone')) return;
-              const wrapper = label.closest('[data-testid="stWidgetLabel"]')?.parentElement || label.parentElement;
-              const input = wrapper?.querySelector('input');
-              if (!input || input.dataset.phoneMaskAttached === '1') return;
-              input.dataset.phoneMaskAttached = '1';
-              input.placeholder = '(123) 456-7890';
-              input.inputMode = 'numeric';
-              input.addEventListener('input', () => {
-                const formatted = formatPhone(input.value);
-                if (input.value !== formatted) {
-                  const cursorAtEnd = input.selectionStart === input.value.length;
-                  input.value = formatted;
-                  if (cursorAtEnd) {
-                    input.setSelectionRange(input.value.length, input.value.length);
-                  }
-                }
-              });
-              input.addEventListener('blur', () => {
-                const formatted = formatPhone(input.value);
-                if (input.value !== formatted) input.value = formatted;
-                input.dispatchEvent(new Event('change', { bubbles: true }));
-              });
-              if (input.value) {
-                const formatted = formatPhone(input.value);
-                if (formatted && input.value !== formatted) input.value = formatted;
-              }
-            });
-          };
-
-          markPhoneInputs();
-          const doc = window.parent?.document || document;
-          const observer = new MutationObserver(markPhoneInputs);
-          observer.observe(doc.body, { childList: true, subtree: true });
-          setInterval(markPhoneInputs, 1000);
-        })();
-        </script>
-        """,
-        height=0,
-        width=0,
-    )
 
 
 def product_price_label(product: Product) -> str:
@@ -1526,38 +1064,6 @@ DAMAGE_REASONS = (
 
 
 PAYMENT_METHODS = ("", "Cash", "Zelle", "PayPal", "Debit card", "Credit card", "Check")
-
-
-def today_iso() -> str:
-    return date.today().isoformat()
-
-
-def date_from_iso(value: str | None, fallback: date | None = None) -> date:
-    if value:
-        try:
-            return date.fromisoformat(value)
-        except ValueError:
-            pass
-    return fallback or date.today()
-
-
-def display_date(value: str | None) -> str:
-    if not value:
-        return "Not set"
-    try:
-        return date.fromisoformat(value).strftime("%b %d, %Y")
-    except ValueError:
-        return value
-
-
-def row_value(row: sqlite3.Row | dict[str, Any] | None, key: str, default: Any = "") -> Any:
-    if row is None:
-        return default
-    keys = row.keys() if hasattr(row, "keys") else []
-    if key not in keys:
-        return default
-    value = row[key]
-    return default if value is None else value
 
 
 CUSTOMER_DEFAULTS: dict[str, Any] = {
@@ -1774,16 +1280,8 @@ SUPABASE_PRODUCT_LIST_COLUMNS = {"directions", "glass_colors", "frame_colors", "
 SUPABASE_PRODUCT_DATE_COLUMNS = {"updated_at"}
 
 
-def secret_or_env(name: str, default: str = "") -> str:
-    try:
-        value = st.secrets.get(name, "")
-    except Exception:
-        value = ""
-    return str(value or os.environ.get(name, default) or "").strip()
-
-
 def supabase_customers_enabled() -> bool:
-    return bool(secret_or_env("SUPABASE_URL") and (secret_or_env("SUPABASE_SERVICE_KEY") or secret_or_env("SUPABASE_KEY")))
+    return supabase_configured()
 
 
 def supabase_orders_enabled() -> bool:
@@ -1792,54 +1290,6 @@ def supabase_orders_enabled() -> bool:
 
 def supabase_products_enabled() -> bool:
     return supabase_customers_enabled()
-
-
-def supabase_api_key() -> str:
-    return secret_or_env("SUPABASE_SERVICE_KEY") or secret_or_env("SUPABASE_KEY")
-
-
-def supabase_base_url() -> str:
-    raw_url = secret_or_env("SUPABASE_URL").strip().rstrip("/")
-    if raw_url.endswith("/rest/v1"):
-        raw_url = raw_url[: -len("/rest/v1")]
-    parsed = parse.urlsplit(raw_url)
-    if parsed.scheme and parsed.netloc and parsed.netloc.endswith(".supabase.co"):
-        return f"{parsed.scheme}://{parsed.netloc}"
-    return raw_url
-
-
-def supabase_request(method: str, table: str, query: str = "", payload: Any | None = None, prefer: str = "return=representation") -> Any:
-    base_url = supabase_base_url()
-    api_key = supabase_api_key()
-    if not base_url or not api_key:
-        raise RuntimeError("Supabase is not configured.")
-    url = f"{base_url}/rest/v1/{table}"
-    if query:
-        url += f"?{query}"
-    headers = {
-        "apikey": api_key,
-        "Authorization": f"Bearer {api_key}",
-        "Accept": "application/json",
-        "Content-Type": "application/json",
-    }
-    if prefer:
-        headers["Prefer"] = prefer
-    data = json.dumps(payload).encode("utf-8") if payload is not None else None
-    req = url_request.Request(url, data=data, headers=headers, method=method.upper())
-    try:
-        with url_request.urlopen(req, timeout=15) as response:
-            body = response.read().decode("utf-8")
-    except url_error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"Supabase request failed: {exc.code} {detail}") from exc
-    except url_error.URLError as exc:
-        raise RuntimeError(
-            "Supabase connection failed. Please check SUPABASE_URL in Streamlit Secrets. "
-            "It should look like https://your-project-ref.supabase.co"
-        ) from exc
-    if not body:
-        return []
-    return json.loads(body)
 
 
 def warn_supabase_fallback(message: str, *, key: str = "customer") -> None:
@@ -3715,14 +3165,6 @@ def service_requests(search: str = "", status: str = "") -> list[sqlite3.Row]:
         return conn.execute(query, params).fetchall()
 
 
-def service_request_by_id(request_id: int | None) -> sqlite3.Row | None:
-    if not request_id:
-        return None
-    with db_connect() as conn:
-        conn.row_factory = sqlite3.Row
-        return conn.execute("SELECT * FROM service_requests WHERE id = ?", (request_id,)).fetchone()
-
-
 def save_service_request(data: dict[str, Any]) -> int:
     now = datetime.now().isoformat(timespec="seconds")
     payload = {**data, "updated_at": now}
@@ -3787,17 +3229,6 @@ def update_service_request(
     add_service_timeline_event(request_id, date.today(), status, title, timeline_notes)
 
 
-def customer_payment_total(row: sqlite3.Row) -> float:
-    first_paid = bool(int(row_value(row, "first_payment_paid", 0) or 0))
-    second_enabled = bool(int(row_value(row, "second_payment_enabled", 1) or 0))
-    second_paid = bool(int(row_value(row, "second_payment_paid", 0) or 0)) if second_enabled else False
-    return (
-        float(row["first_payment_amount"] or 0) if first_paid else 0.0
-    ) + (
-        float(row["second_payment_amount"] or 0) if second_paid else 0.0
-    )
-
-
 def normalized_install_status(value: str | None) -> str:
     clean = str(value or "").strip()
     return LEGACY_INSTALL_STATUS_MAP.get(clean, clean if clean in INSTALL_STATUSES else INSTALL_STATUSES[4])
@@ -3818,24 +3249,6 @@ def update_customer_install_status(customer_id: int, install_status: str) -> Non
         with db_connect() as conn:
             conn.execute("UPDATE customers SET install_status = ?, updated_at = ? WHERE id = ?", (normalized, now, customer_id))
     add_customer_timeline_event(customer_id, date.today(), "Order progress updated", f"Order progress changed to {normalized}.")
-
-
-def period_bounds(period: str, anchor: date) -> tuple[date, date]:
-    if period == "Month":
-        start = anchor.replace(day=1)
-        next_month = (start.replace(day=28) + timedelta(days=4)).replace(day=1)
-        return start, next_month - timedelta(days=1)
-    if period == "Quarter":
-        quarter_month = ((anchor.month - 1) // 3) * 3 + 1
-        start = date(anchor.year, quarter_month, 1)
-        next_quarter_month = quarter_month + 3
-        if next_quarter_month > 12:
-            next_quarter = date(anchor.year + 1, 1, 1)
-        else:
-            next_quarter = date(anchor.year, next_quarter_month, 1)
-        return start, next_quarter - timedelta(days=1)
-    start = date(anchor.year, 1, 1)
-    return start, date(anchor.year, 12, 31)
 
 
 def month_bounds(anchor: date) -> tuple[date, date]:
@@ -4195,18 +3608,6 @@ def append_wishlist_items(existing_wishlist: list[dict[str, Any]], new_items: li
     return merged
 
 
-def append_cart_to_customer_wishlist(customer_id: int | None) -> tuple[int, int]:
-    current_wishlist = wishlist_from_cart()
-    if not customer_id:
-        st.session_state.wishlist_draft = append_wishlist_items(st.session_state.get("wishlist_draft", []), current_wishlist)
-        return len(st.session_state.wishlist_draft), len(current_wishlist)
-    customer = customer_by_id(int(customer_id))
-    existing_wishlist = parse_wishlist(row_value(customer, "wishlist") if customer else None)
-    merged_wishlist = append_wishlist_items(existing_wishlist, current_wishlist)
-    save_customer_wishlist(int(customer_id), merged_wishlist)
-    return len(merged_wishlist), len(current_wishlist)
-
-
 def item_color_label(item: dict[str, Any]) -> str:
     value = str(item.get("color") or "").strip()
     if not value:
@@ -4214,14 +3615,6 @@ def item_color_label(item: dict[str, Any]) -> str:
     if str(item.get("product_id") or "") == "AC-100" or str(item.get("name") or "").strip().lower() == "roller screen":
         return f"{value} stacking side"
     return f"{value} color"
-
-
-def wishlist_product_ids(wishlist: list[dict[str, Any]]) -> list[str]:
-    return [
-        str(item.get("product_id"))
-        for item in wishlist
-        if item.get("source") != "cart" and item.get("product_id")
-    ]
 
 
 def option_tuple_with_current(options: Sequence[str], current: str | None) -> tuple[str, ...]:
@@ -5075,114 +4468,6 @@ def update_customer_payment_schedule(
             f"{second_note}"
         ),
     )
-
-
-def wishlist_item_label(item: dict[str, Any], index: int) -> str:
-    name = item.get("name") or item.get("product_id") or f"Product {index}"
-    quantity = int(item.get("quantity") or 1)
-    details = []
-    if item.get("width") and item.get("height"):
-        details.append(f"{float(item['width']):.1f}\" W x {float(item['height']):.1f}\" H")
-    if item.get("color"):
-        details.append(str(item["color"]))
-    if item.get("glass"):
-        details.append(f"{item['glass']} glass")
-    if item.get("frame"):
-        details.append(f"{item['frame']} frame")
-    amount = float(item.get("line_total") or 0)
-    label = f"{index}. {name} x {quantity}"
-    if details:
-        label += " · " + " · ".join(details)
-    if amount:
-        label += f" · {money(amount)}"
-    return label
-
-
-def mark_wishlist_items_ordered(customer_id: int, wishlist: list[dict[str, Any]], selected_indexes: list[int]) -> None:
-    if not selected_indexes:
-        return
-    selected_index_set = {int(index) for index in selected_indexes}
-    selected_items = [dict(item) for index, item in enumerate(wishlist) if index in selected_index_set]
-    if not selected_items:
-        return
-    selected_items, inventory_messages = deduct_inventory_for_order_items(selected_items)
-    selected_by_index = dict(zip([index for index in range(len(wishlist)) if index in selected_index_set], selected_items))
-    preserved_wishlist: list[dict[str, Any]] = []
-    for index, item in enumerate(wishlist):
-        if index in selected_by_index:
-            updated_item = dict(selected_by_index[index])
-            updated_item["order_status"] = "Ordered"
-        else:
-            updated_item = dict(item)
-            updated_item.setdefault("order_status", "Wishlist")
-        preserved_wishlist.append(updated_item)
-
-    order_day = date.today()
-    factory_items = production_required_items(selected_items)
-    install_followup_date = (order_day + timedelta(days=70)).isoformat() if factory_items else order_day.isoformat()
-    now = datetime.now().isoformat(timespec="seconds")
-    product_names = ", ".join(
-        dict.fromkeys(str(item.get("name") or item.get("product_id") or "Product") for item in selected_items)
-    )
-    product_total = wishlist_total(selected_items)
-    tax = 0.0
-    total = product_total + tax
-    first_payment_due = product_total * 0.5
-    second_payment_due = product_total * 0.5 + tax
-    updates = {
-        "status": "Ordered",
-        "updated_at": now,
-        "order_date": order_day.isoformat(),
-        "followup_stage": "Quoted",
-        "products_interest": product_names,
-        "budget": total,
-        "wishlist": json.dumps(preserved_wishlist, ensure_ascii=False),
-        "install_status": "Not scheduled",
-        "install_followup_date": install_followup_date,
-        "first_payment_amount": first_payment_due,
-        "first_payment_paid": 0,
-        "second_payment_enabled": 1 if second_payment_due > 0 else 0,
-        "second_payment_amount": second_payment_due,
-        "first_payment_date": today_iso(),
-        "second_payment_date": today_iso(),
-        "second_payment_paid": 0,
-        "on_hold": 0,
-    }
-    if supabase_customers_enabled():
-        try:
-            supabase_update_customer(customer_id, updates)
-            mirror_customer_to_sqlite(customer_id, {**updates, "id": customer_id})
-        except Exception as exc:
-            st.error(f"Ordered status could not be saved to Supabase: {exc}")
-            st.stop()
-    else:
-        with db_connect() as conn:
-            assignments = ", ".join(f"{key} = ?" for key in updates)
-            conn.execute(
-                f"UPDATE customers SET {assignments} WHERE id = ?",
-                [*updates.values(), customer_id],
-            )
-    save_customer_cart(customer_id, selected_items)
-    add_customer_timeline_event(
-        customer_id,
-        date.today(),
-        "Wishlist products marked as ordered",
-        f"Ordered products: {product_names}. Estimated total: {money(total)}.",
-    )
-    if inventory_messages:
-        add_customer_timeline_event(
-            customer_id,
-            date.today(),
-            "Inventory updated",
-            " ".join(inventory_messages),
-        )
-    if factory_items:
-        add_customer_timeline_event(
-            customer_id,
-            date.today(),
-            "Production required",
-            f"{len(factory_items)} product line(s) need factory production. Installation reminder set for {display_date(install_followup_date)}.",
-        )
 
 
 def supabase_delete_customer_orders(customer_id: int) -> None:
@@ -6206,17 +5491,6 @@ def customers_page() -> None:
         )
         st.session_state.customer_editor_id = selected_id or None
         customer_editor(customer_by_id(selected_id) if selected_id else None, form_key="customer-editor-tab")
-
-
-def query_param_value(name: str) -> str:
-    try:
-        value = st.query_params.get(name, "")
-    except Exception:
-        return ""
-    if isinstance(value, list):
-        return str(value[0] if value else "")
-    return str(value or "")
-
 
 
 def finance_customer_detail_table(rows: list[dict[str, Any]], empty_message: str) -> None:
@@ -7529,15 +6803,6 @@ def included_cart_items(cart: list[dict[str, Any]] | None = None) -> list[dict[s
 def cart_subtotal(cart: list[dict[str, Any]] | None = None) -> float:
     return sum(float(item.get("line_total", 0.0) or 0.0) for item in included_cart_items(cart))
 
-def cart_metrics() -> tuple[float, float, float]:
-    subtotal = cart_subtotal()
-    discount, _ = cart_discount(subtotal)
-    discounted_subtotal = max(subtotal - discount, 0.0)
-    tax_rate = quote_tax_rate()
-    tax = discounted_subtotal * tax_rate
-    return subtotal, tax, discounted_subtotal + tax + quote_installation_fee() + quote_shipping_fee()
-
-
 def quote_adjustment_snapshot() -> dict[str, Any]:
     subtotal = cart_subtotal()
     discount, discount_label = cart_discount(subtotal)
@@ -8793,32 +8058,6 @@ def checkout_page() -> None:
                 st.caption("Add SMTP settings to `.streamlit/secrets.toml` to enable sending.")
 
 
-def quotes_page() -> None:
-    st.title("Saved quotes")
-    st.caption("Quotes generated on this computer are stored in the local SQLite database.")
-    with db_connect() as conn:
-        conn.row_factory = sqlite3.Row
-        rows = conn.execute(
-            """
-            SELECT quotes.*, customers.name AS linked_customer_name
-            FROM quotes
-            LEFT JOIN customers ON customers.id = quotes.customer_id
-            ORDER BY quotes.created_at DESC
-            LIMIT 100
-            """
-        ).fetchall()
-    if not rows:
-        st.markdown('<div class="empty">No quotes yet. Create one from the cart.</div>', unsafe_allow_html=True)
-        return
-    for row in rows:
-        with st.expander(f"{row['quote_number']} · {row['customer_name']} · {money(row['total'])}"):
-            linked = row["linked_customer_name"] or "Not linked"
-            st.write(f"**Linked customer:** {linked}  \n**Email:** {row['customer_email']}  \n**Phone:** {row['customer_phone']}  \n**Address:** {row['customer_address']}  \n**Status:** {row['status']}")
-            path = OUTPUT_DIR / f"{row['quote_number']}.pdf"
-            if path.exists():
-                st.download_button("Download PDF", path.read_bytes(), file_name=path.name, mime="application/pdf", key=f"saved-{row['quote_number']}")
-
-
 def product_editor(existing: Product | None, form_key: str) -> None:
     is_edit = existing is not None
     product = existing or Product(
@@ -9058,8 +8297,34 @@ def admin_page() -> None:
         product_editor(None, "add-product")
 
 
-def about_page() -> None:
-    st.empty()
+PAGE_RENDERERS = {
+    "Catalog": catalog_page,
+    "Cart": cart_page,
+    "Checkout": checkout_page,
+    "OrderCheckout": order_checkout_page,
+    "Customers": customers_page,
+    "Inventory": inventory_page,
+    "After-sales": after_sales_page,
+    "Finance": finance_page,
+}
+
+
+def render_current_page() -> None:
+    selected_product_id = st.session_state.selected_product
+    if selected_product_id and any(
+        product.id == selected_product_id and product.active for product in PRODUCTS
+    ):
+        configure_page(get_product(selected_product_id))
+        return
+
+    page = st.session_state.page
+    if page == "Quotes":
+        st.session_state.page = "Catalog"
+        st.rerun()
+    if page == "Admin":
+        (admin_page if is_manager_user() else catalog_page)()
+        return
+    PAGE_RENDERERS.get(page, catalog_page)()
 
 
 def main() -> None:
@@ -9078,31 +8343,7 @@ def main() -> None:
     normalize_existing_catalog_images()
     ensure_assets()
     top_nav()
-    if st.session_state.selected_product and any(product.id == st.session_state.selected_product and product.active for product in PRODUCTS):
-        configure_page(get_product(st.session_state.selected_product))
-    elif st.session_state.page == "Catalog":
-        catalog_page()
-    elif st.session_state.page == "Cart":
-        cart_page()
-    elif st.session_state.page == "Checkout":
-        checkout_page()
-    elif st.session_state.page == "OrderCheckout":
-        order_checkout_page()
-    elif st.session_state.page == "Quotes":
-        st.session_state.page = "Catalog"
-        st.rerun()
-    elif st.session_state.page == "Customers":
-        customers_page()
-    elif st.session_state.page == "Inventory":
-        inventory_page()
-    elif st.session_state.page == "After-sales":
-        after_sales_page()
-    elif st.session_state.page == "Finance":
-        finance_page()
-    elif st.session_state.page == "Admin":
-        admin_page() if is_manager_user() else catalog_page()
-    else:
-        about_page()
+    render_current_page()
     st.markdown('<div class="footer">FRAMEFLOW · INTERNAL TRADE PORTAL · PRICING SUBJECT TO FINAL REVIEW</div>', unsafe_allow_html=True)
 
 
