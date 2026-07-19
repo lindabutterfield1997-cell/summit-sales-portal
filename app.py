@@ -3157,14 +3157,29 @@ def update_latest_customer_order_payment_schedule(
         assignments = ", ".join(f"{key} = ?" for key in updates)
         conn.execute(f"UPDATE customer_orders SET {assignments} WHERE id = ?", [*updates.values(), int(latest["id"])])
     if supabase_orders_enabled():
-        supabase_updates = supabase_order_payload(
-            {
-                **updates,
-                "payload": payload,
-            }
-        )
-        query = parse.urlencode({"order_number": f"eq.{latest['order_number']}"})
-        supabase_request("PATCH", "customer_orders", query=query, payload=supabase_updates)
+        order_number_value = str(latest["order_number"] or "").strip()
+        if not order_number_value:
+            raise RuntimeError("The latest customer order does not have an order number for Supabase sync.")
+        customer = finance_customer_by_id(customer_id) or sqlite_customer_by_id(customer_id)
+        supabase_customer_id = supabase_customer_id_for_order(customer_id, customer)
+        synced_order = dict(latest)
+        synced_order.update(updates)
+        synced_order["customer_id"] = supabase_customer_id
+        synced_order["payload"] = payload
+        supabase_updates = supabase_order_payload(synced_order)
+        lookup_query = parse.urlencode({"select": "id", "order_number": f"eq.{order_number_value}", "limit": "1"})
+        existing_rows = supabase_request("GET", "customer_orders", query=lookup_query, prefer="")
+        if existing_rows:
+            order_id = int(existing_rows[0]["id"])
+            query = parse.urlencode({"id": f"eq.{order_id}"})
+            rows = supabase_request("PATCH", "customer_orders", query=query, payload=supabase_updates)
+        else:
+            rows = supabase_request("POST", "customer_orders", payload=supabase_updates)
+        if not rows:
+            raise RuntimeError("Supabase did not return the updated customer order.")
+        saved_order_id = int(rows[0].get("id") or 0)
+        if saved_order_id:
+            supabase_replace_customer_order_items(saved_order_id, synced_order)
 
 
 def order_summary_from_order_row(row: sqlite3.Row) -> dict[str, float | str]:
@@ -3402,6 +3417,33 @@ def render_customer_orders(customer_id: int) -> None:
         balance = max(float(order_row["total"] or 0) - paid_total, 0.0)
         with st.expander(f"{order_row['order_number']} · {display_date(order_row['order_date'])} · {money(float(order_row['total'] or 0))}", expanded=False):
             st.caption(f"Sales: {order_row['salesperson'] or 'Unassigned'} · Paid: {money(paid_total)} · Balance: {money(balance)}")
+            first_paid = bool(row_value(order_row, "first_payment_paid", 0))
+            second_enabled = bool(row_value(order_row, "second_payment_enabled", 1))
+            second_paid = bool(row_value(order_row, "second_payment_paid", 0)) if second_enabled else False
+            payment_rows = [
+                {
+                    "Payment": "First payment",
+                    "Due date": display_date(row_value(order_row, "first_payment_date", "")),
+                    "Amount": money(float(row_value(order_row, "first_payment_amount", 0) or 0)),
+                    "Status": "Paid" if first_paid else "Unpaid",
+                    "Method": row_value(order_row, "first_payment_method", "") or "Not set",
+                }
+            ]
+            if second_enabled:
+                payment_rows.append(
+                    {
+                        "Payment": "Second payment",
+                        "Due date": display_date(row_value(order_row, "second_payment_date", "")),
+                        "Amount": money(float(row_value(order_row, "second_payment_amount", 0) or 0)),
+                        "Status": "Paid" if second_paid else "Unpaid",
+                        "Method": row_value(order_row, "second_payment_method", "") or "Not set",
+                    }
+                )
+            else:
+                payment_rows.append({"Payment": "Second payment", "Due date": "Not required", "Amount": money(0), "Status": "Not required", "Method": ""})
+            st.markdown("#### Payment schedule / 付款计划")
+            st.dataframe(payment_rows, hide_index=True, width="stretch")
+            st.markdown("#### Ordered products / 下单产品")
             for index, item in enumerate(items, start=1):
                 color_label = item_color_label(item)
                 color_note = f" · {color_label}" if color_label else ""
@@ -4996,6 +5038,7 @@ def update_customer_payment_schedule(
             second_date_value,
             second_amount,
             second_paid_value,
+            second_payment_method.strip(),
         )
     except Exception as exc:
         st.error(f"Customer payment schedule was saved, but the order ledger could not be updated: {exc}")
