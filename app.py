@@ -6277,35 +6277,37 @@ def finance_customer_detail_table(rows: list[dict[str, Any]], empty_message: str
     if not rows:
         st.markdown(f'<div class="empty">{html.escape(empty_message)}</div>', unsafe_allow_html=True)
         return
-    header = st.columns([1.35, 1.0, 0.95, 1.1, 0.85, 0.85, 0.95], vertical_alignment="center")
-    for col, label in zip(header, ["Customer", "Salesperson", "Order date", "Amount", "Shipping", "Installation", "Paid total"]):
-        col.markdown(f"**{label}**")
-    for index, row in enumerate(rows):
-        cols = st.columns([1.35, 1.0, 0.95, 1.1, 0.85, 0.85, 0.95], vertical_alignment="center")
-        cols[0].markdown(customer_detail_link(int(row["customer_id"]), str(row["customer"])), unsafe_allow_html=True)
-        cols[1].write(row["sales"])
-        cols[2].write(display_date(row["order_date"]))
-        cols[3].write(money(float(row["product_total"])))
-        cols[4].write(money(float(row.get("shipping") or 0)))
-        cols[5].write(money(float(row["installation"])))
-        cols[6].write(money(float(row["paid_total"])))
+    table_rows = [
+        {
+            "Customer": str(row.get("customer") or ""),
+            "Salesperson": str(row.get("sales") or ""),
+            "Order date": display_date(row.get("order_date")),
+            "Amount": money(float(row.get("product_total") or 0)),
+            "Shipping": money(float(row.get("shipping") or 0)),
+            "Installation": money(float(row.get("installation") or 0)),
+            "Paid total": money(float(row.get("paid_total") or 0)),
+        }
+        for row in rows
+    ]
+    st.dataframe(table_rows, hide_index=True, width="stretch")
 
 
 def finance_expected_second_detail_table(rows: list[dict[str, Any]], empty_message: str) -> None:
     if not rows:
         st.markdown(f'<div class="empty">{html.escape(empty_message)}</div>', unsafe_allow_html=True)
         return
-    header = st.columns([0.95, 1.35, 1.0, 1.15, 1.1, 0.95], vertical_alignment="center")
-    for col, label in zip(header, ["Due date", "Customer", "Salesperson", "Expected", "Product sales", "Order date"]):
-        col.markdown(f"**{label}**")
-    for index, row in enumerate(rows):
-        cols = st.columns([0.95, 1.35, 1.0, 1.15, 1.1, 0.95], vertical_alignment="center")
-        cols[0].write(display_date(row["second_payment_date"]))
-        cols[1].markdown(customer_detail_link(int(row["customer_id"]), str(row["customer"])), unsafe_allow_html=True)
-        cols[2].write(row["sales"])
-        cols[3].write(money(float(row["second_payment_amount"])))
-        cols[4].write(money(float(row["product_total"])))
-        cols[5].write(display_date(row["order_date"]))
+    table_rows = [
+        {
+            "Due date": display_date(row.get("second_payment_date")),
+            "Customer": str(row.get("customer") or ""),
+            "Salesperson": str(row.get("sales") or ""),
+            "Expected": money(float(row.get("second_payment_amount") or 0)),
+            "Product sales": money(float(row.get("product_total") or 0)),
+            "Order date": display_date(row.get("order_date")),
+        }
+        for row in rows
+    ]
+    st.dataframe(table_rows, hide_index=True, width="stretch")
 
 
 def finance_page() -> None:
