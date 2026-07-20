@@ -4033,6 +4033,7 @@ def update_cart_item_configuration(
     width: float,
     height: float,
     quantity: int,
+    sales_base_rate: float | None = None,
     direction: str | None = None,
     glass: str | None = None,
     frame: str | None = None,
@@ -4049,11 +4050,18 @@ def update_cart_item_configuration(
     color = str(color if color is not None else item.get("color") or ((product.color_options or product.frame_colors)[0] if (product.color_options or product.frame_colors) else ""))
     notes = str(notes if notes is not None else item.get("notes") or "")
     quote_option = normalize_quote_option(quote_option if quote_option is not None else item.get("quote_option"))
+    stored_rate_value = item.get("sales_base_rate")
+    stored_sales_base_rate = float(product.base_rate if stored_rate_value in (None, "") else stored_rate_value)
+    requested_sales_base_rate = max(
+        float(stored_sales_base_rate if sales_base_rate is None else sales_base_rate),
+        0.0,
+    )
 
     current_values = (
         round(float(item.get("width") or 0.0), 3),
         round(float(item.get("height") or 0.0), 3),
         int(item.get("quantity") or 1),
+        round(stored_sales_base_rate, 3),
         str(item.get("direction") or ""),
         str(item.get("glass") or ""),
         str(item.get("frame") or ""),
@@ -4061,16 +4069,34 @@ def update_cart_item_configuration(
         str(item.get("notes") or ""),
         quote_option_label(item),
     )
-    new_values = (round(width, 3), round(height, 3), quantity, direction, glass, frame, color, notes, quote_option)
+    new_values = (
+        round(width, 3),
+        round(height, 3),
+        quantity,
+        round(requested_sales_base_rate, 3),
+        direction,
+        glass,
+        frame,
+        color,
+        notes,
+        quote_option,
+    )
     if current_values == new_values:
         return False
 
     calculated_unit, breakdown = price_product(product, width, height, glass, frame)
-    sales_base_rate = float(item.get("sales_base_rate", product.base_rate) or product.base_rate)
-    sales_unit_from_rate, sales_breakdown = price_product_with_rate(product, width, height, glass, frame, sales_base_rate)
+    sales_unit_from_rate, sales_breakdown = price_product_with_rate(
+        product,
+        width,
+        height,
+        glass,
+        frame,
+        requested_sales_base_rate,
+    )
     previous_unit = float(item.get("unit_price", calculated_unit) or calculated_unit)
     adjustment_mode = str(item.get("price_adjustment_mode") or "")
     was_unit_adjusted = bool(item.get("price_adjusted")) and adjustment_mode != "rate"
+    rate_was_edited = sales_base_rate is not None and abs(requested_sales_base_rate - stored_sales_base_rate) > 0.005
 
     item["direction"] = direction
     item["glass"] = glass
@@ -4081,13 +4107,14 @@ def update_cart_item_configuration(
     item["quantity"] = quantity
     item["area_sqft"] = sales_breakdown["area_sqft"]
     item["base_rate"] = product.base_rate
-    item["sales_base_rate"] = sales_base_rate
+    item["sales_base_rate"] = requested_sales_base_rate
     item["original_unit_price"] = calculated_unit
     item["notes"] = notes
     item["quote_option"] = quote_option
-    if adjustment_mode == "rate":
+    if rate_was_edited or adjustment_mode == "rate":
         item["unit_price"] = sales_unit_from_rate
-        item["price_adjusted"] = abs(sales_base_rate - float(product.base_rate)) > 0.005
+        item["price_adjusted"] = abs(requested_sales_base_rate - float(product.base_rate)) > 0.005
+        item["price_adjustment_mode"] = "rate" if item["price_adjusted"] else ""
     elif was_unit_adjusted:
         item["unit_price"] = previous_unit
         item["price_adjusted"] = abs(previous_unit - calculated_unit) > 0.005
@@ -6937,18 +6964,57 @@ def cart_page() -> None:
             option_name: [item for _, item in entries]
             for option_name, entries in option_groups
         }
+        for _, index, grouped_item in display_entries:
+            cart_changed = normalize_cart_item(grouped_item, index) or cart_changed
         current_option_name = ""
+        current_option_expander = None
         for option_name, index, item in display_entries:
-            cart_changed = normalize_cart_item(item, index) or cart_changed
             if option_name != current_option_name:
                 current_option_name = option_name
                 group_items = option_group_items[option_name]
+                section_enabled = any(cart_item_included(group_item) for group_item in group_items)
                 included_count = sum(1 for group_item in group_items if cart_item_included(group_item))
-                st.markdown(f"### {option_name}")
-                st.caption(
-                    f"{included_count} of {len(group_items)} product line(s) included · "
-                    f"Section subtotal: {money(quote_option_subtotal(group_items))}"
+                section_status = money(quote_option_subtotal(group_items)) if section_enabled else "Not included"
+                current_option_expander = st.expander(
+                    f"{option_name} · {section_status}",
+                    expanded=True,
                 )
+                section_identity = f"{st.session_state.active_customer_id or 'guest'}:{option_name.casefold()}"
+                section_token = hashlib.sha1(section_identity.encode("utf-8")).hexdigest()[:12]
+                section_toggle_key = f"cart-section-enabled-{section_token}"
+                section_sync_key = f"cart-section-enabled-sync-{section_token}"
+                last_section_state = st.session_state.get(section_sync_key)
+                if (
+                    section_toggle_key not in st.session_state
+                    or last_section_state is None
+                    or bool(last_section_state) != section_enabled
+                ):
+                    st.session_state[section_toggle_key] = section_enabled
+                st.session_state[section_sync_key] = section_enabled
+                include_section = current_option_expander.toggle(
+                    "Include this section in quote / order total",
+                    key=section_toggle_key,
+                    help="Turn this off to keep every product in this section in the cart without including its price or products in the quote or order.",
+                )
+                if include_section != section_enabled:
+                    for group_item in group_items:
+                        group_item["included_in_quote"] = bool(include_section)
+                        group_line_id = str(group_item.get("line_id") or "")
+                        if group_line_id:
+                            st.session_state[f"include-{group_line_id}"] = bool(include_section)
+                    st.session_state[section_sync_key] = bool(include_section)
+                    save_customer_cart(st.session_state.active_customer_id)
+                    st.rerun()
+                if section_enabled:
+                    current_option_expander.caption(
+                        f"{included_count} of {len(group_items)} product line(s) included · "
+                        f"Section subtotal: {money(quote_option_subtotal(group_items))}"
+                    )
+                else:
+                    current_option_expander.caption(
+                        f"0 of {len(group_items)} product line(s) included · "
+                        "This section is excluded from the quote and order total."
+                    )
             product = get_product_or_none(str(item.get("product_id") or ""))
             if product is None:
                 st.warning(f"A cart item references a deleted product ({item.get('product_id')}). It was removed from this cart.")
@@ -6956,7 +7022,9 @@ def cart_page() -> None:
                 save_customer_cart(st.session_state.active_customer_id)
                 st.rerun()
             line_id = str(item["line_id"])
-            with st.container(border=True):
+            if current_option_expander is None:
+                continue
+            with current_option_expander.container(border=True):
                 image, info, action = st.columns([0.85, 2.6, 0.65], vertical_alignment="center")
                 with image:
                     st.image(str(image_path(product, "hero")), width="stretch")
@@ -7051,13 +7119,40 @@ def cart_page() -> None:
                             )
                         cart_notes = st.text_input("Item notes", value=str(item.get("notes") or ""), key=f"cart-notes-{line_id}")
                         edited_area_sqft = float(cart_width) * float(cart_height) / 144
-                        st.caption(f"Area: {edited_area_sqft:.2f} sq ft")
+                        cart_rate_value = item.get("sales_base_rate")
+                        cart_sales_base_rate = float(product.base_rate if cart_rate_value in (None, "") else cart_rate_value)
+                        if product.base_rate > 0:
+                            cart_rate_info_col, cart_rate_input_col = st.columns([0.8, 1.2], vertical_alignment="bottom")
+                            with cart_rate_info_col:
+                                st.caption(f"Company base price: {money(product.base_rate)}/sq ft")
+                            with cart_rate_input_col:
+                                cart_sales_base_rate = st.number_input(
+                                    "Sales price ($/sq ft)",
+                                    min_value=0.0,
+                                    value=cart_sales_base_rate,
+                                    step=1.0,
+                                    key=f"cart-sales-rate-{line_id}",
+                                    help="Adjust the price per square foot for this product. The unit and line totals will be recalculated from the current size.",
+                                )
+                        edited_unit_price, _ = price_product_with_rate(
+                            product,
+                            float(cart_width),
+                            float(cart_height),
+                            str(cart_glass),
+                            str(cart_frame),
+                            float(cart_sales_base_rate),
+                        )
+                        st.caption(
+                            f"Area: {edited_area_sqft:.2f} sq ft · "
+                            f"Calculated unit price: {money(edited_unit_price)}"
+                        )
                         if update_cart_item_configuration(
                             item,
                             product,
                             cart_width,
                             cart_height,
                             int(cart_quantity),
+                            sales_base_rate=float(cart_sales_base_rate),
                             direction=str(cart_direction),
                             glass=str(cart_glass),
                             frame=str(cart_frame),
@@ -7100,6 +7195,7 @@ def cart_page() -> None:
                         st.markdown(f"**Line total**  \n{money(float(item['line_total']))}")
                     with reset_col:
                         if item.get("price_adjusted") and st.button("Reset price", key=f"reset-price-{line_id}"):
+                            item["sales_base_rate"] = float(product.base_rate)
                             sync_cart_item_price(item, float(item.get("original_unit_price", item["unit_price"])))
                             save_customer_cart(st.session_state.active_customer_id)
                             st.rerun()
