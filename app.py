@@ -2723,6 +2723,7 @@ def order_item_match_key(item: dict[str, Any]) -> tuple[Any, ...]:
         str(item.get("frame") or "").strip().lower(),
         str(item.get("color") or "").strip().lower(),
         int(item.get("quantity") or 1),
+        quote_option_label(item).casefold(),
     )
 
 
@@ -3548,6 +3549,7 @@ def wishlist_from_cart() -> list[dict[str, Any]]:
                 "unit_price": item.get("unit_price", 0),
                 "line_total": item.get("line_total", 0),
                 "included_in_quote": cart_item_included(item),
+                "quote_option": quote_option_label(item),
                 "notes": item.get("notes", ""),
             }
         )
@@ -3568,6 +3570,7 @@ def wishlist_from_products(product_ids: list[str]) -> list[dict[str, Any]]:
                     "quantity": 1,
                     "unit_price": product.minimum_price,
                     "line_total": product.minimum_price,
+                    "quote_option": DEFAULT_QUOTE_OPTION,
                     "notes": "",
                 }
             )
@@ -3590,6 +3593,7 @@ def wishlist_merge_key(item: dict[str, Any]) -> tuple[Any, ...]:
         str(item.get("notes") or "").strip().lower(),
         round(float(item.get("unit_price") or 0), 2),
         str(item.get("order_status") or "Wishlist").strip().lower(),
+        quote_option_label(item).lower(),
     )
 
 
@@ -4034,6 +4038,7 @@ def update_cart_item_configuration(
     frame: str | None = None,
     color: str | None = None,
     notes: str | None = None,
+    quote_option: str | None = None,
 ) -> bool:
     width = float(width)
     height = float(height)
@@ -4043,6 +4048,7 @@ def update_cart_item_configuration(
     frame = str(frame if frame is not None else item.get("frame") or (product.frame_colors[0] if product.frame_colors else ""))
     color = str(color if color is not None else item.get("color") or ((product.color_options or product.frame_colors)[0] if (product.color_options or product.frame_colors) else ""))
     notes = str(notes if notes is not None else item.get("notes") or "")
+    quote_option = normalize_quote_option(quote_option if quote_option is not None else item.get("quote_option"))
 
     current_values = (
         round(float(item.get("width") or 0.0), 3),
@@ -4053,8 +4059,9 @@ def update_cart_item_configuration(
         str(item.get("frame") or ""),
         str(item.get("color") or ""),
         str(item.get("notes") or ""),
+        quote_option_label(item),
     )
-    new_values = (round(width, 3), round(height, 3), quantity, direction, glass, frame, color, notes)
+    new_values = (round(width, 3), round(height, 3), quantity, direction, glass, frame, color, notes, quote_option)
     if current_values == new_values:
         return False
 
@@ -4077,6 +4084,7 @@ def update_cart_item_configuration(
     item["sales_base_rate"] = sales_base_rate
     item["original_unit_price"] = calculated_unit
     item["notes"] = notes
+    item["quote_option"] = quote_option
     if adjustment_mode == "rate":
         item["unit_price"] = sales_unit_from_rate
         item["price_adjusted"] = abs(sales_base_rate - float(product.base_rate)) > 0.005
@@ -4116,6 +4124,10 @@ def normalize_cart_item(item: dict[str, Any], index: int = 0) -> bool:
     if "included_in_quote" not in item:
         item["included_in_quote"] = True
         changed = True
+    normalized_option = quote_option_label(item)
+    if item.get("quote_option") != normalized_option:
+        item["quote_option"] = normalized_option
+        changed = True
     return changed
 
 
@@ -4133,6 +4145,7 @@ def cart_merge_key(item: dict[str, Any]) -> tuple[Any, ...]:
         round(float(item.get("original_unit_price", item.get("unit_price", 0)) or 0), 2),
         bool(item.get("price_adjusted")),
         cart_item_included(item),
+        quote_option_label(item).lower(),
     )
 
 
@@ -6781,6 +6794,7 @@ def configure_page(product: Product) -> None:
                 "price_adjusted": price_adjusted_by_rate,
                 "price_adjustment_mode": "rate" if price_adjusted_by_rate else "",
                 "included_in_quote": True,
+                "quote_option": DEFAULT_QUOTE_OPTION,
                 "notes": notes,
             }
             merged = add_or_merge_cart_item(item)
@@ -6789,6 +6803,58 @@ def configure_page(product: Product) -> None:
             st.rerun()
     product_info_panel(product)
 
+
+
+DEFAULT_QUOTE_OPTION = "Option 1"
+
+
+def normalize_quote_option(value: Any) -> str:
+    label = " ".join(str(value or "").strip().split())
+    return label or DEFAULT_QUOTE_OPTION
+
+
+def quote_option_label(item: dict[str, Any]) -> str:
+    return normalize_quote_option(item.get("quote_option"))
+
+
+def quote_option_sort_key(label: str) -> tuple[int, int, str]:
+    normalized = normalize_quote_option(label)
+    match = re.fullmatch(r"option\s*(\d+)", normalized, flags=re.IGNORECASE)
+    if match:
+        return (0, int(match.group(1)), normalized.lower())
+    return (1, 0, normalized.lower())
+
+
+def grouped_quote_items(items: Sequence[dict[str, Any]]) -> list[tuple[str, list[dict[str, Any]]]]:
+    groups: dict[str, list[dict[str, Any]]] = {}
+    display_labels: dict[str, str] = {}
+    for item in items:
+        label = quote_option_label(item)
+        key = label.casefold()
+        groups.setdefault(key, []).append(item)
+        display_labels.setdefault(key, label)
+    return [
+        (display_labels[key], groups[key])
+        for key in sorted(groups, key=lambda group_key: quote_option_sort_key(display_labels[group_key]))
+    ]
+
+
+def grouped_cart_entries(items: Sequence[dict[str, Any]]) -> list[tuple[str, list[tuple[int, dict[str, Any]]]]]:
+    groups: dict[str, list[tuple[int, dict[str, Any]]]] = {}
+    display_labels: dict[str, str] = {}
+    for index, item in enumerate(items):
+        label = quote_option_label(item)
+        key = label.casefold()
+        groups.setdefault(key, []).append((index, item))
+        display_labels.setdefault(key, label)
+    return [
+        (display_labels[key], groups[key])
+        for key in sorted(groups, key=lambda group_key: quote_option_sort_key(display_labels[group_key]))
+    ]
+
+
+def quote_option_subtotal(items: Sequence[dict[str, Any]]) -> float:
+    return sum(float(item.get("line_total") or 0.0) for item in items if cart_item_included(item))
 
 
 def cart_item_included(item: dict[str, Any]) -> bool:
@@ -6861,8 +6927,28 @@ def cart_page() -> None:
     items_col, summary_col = st.columns([2.2, 0.8], gap="large")
     with items_col:
         cart_changed = False
-        for index, item in enumerate(st.session_state.cart):
+        option_groups = grouped_cart_entries(st.session_state.cart)
+        display_entries = [
+            (option_name, index, item)
+            for option_name, entries in option_groups
+            for index, item in entries
+        ]
+        option_group_items = {
+            option_name: [item for _, item in entries]
+            for option_name, entries in option_groups
+        }
+        current_option_name = ""
+        for option_name, index, item in display_entries:
             cart_changed = normalize_cart_item(item, index) or cart_changed
+            if option_name != current_option_name:
+                current_option_name = option_name
+                group_items = option_group_items[option_name]
+                included_count = sum(1 for group_item in group_items if cart_item_included(group_item))
+                st.markdown(f"### {option_name}")
+                st.caption(
+                    f"{included_count} of {len(group_items)} product line(s) included · "
+                    f"Section subtotal: {money(quote_option_subtotal(group_items))}"
+                )
             product = get_product_or_none(str(item.get("product_id") or ""))
             if product is None:
                 st.warning(f"A cart item references a deleted product ({item.get('product_id')}). It was removed from this cart.")
@@ -6900,6 +6986,12 @@ def cart_page() -> None:
                         glass_options = option_tuple_with_current(product.glass_colors, str(item.get("glass") or ""))
                         frame_options = option_tuple_with_current(product.frame_colors, str(item.get("frame") or ""))
                         color_options = option_tuple_with_current(product.color_options or product.frame_colors, str(item.get("color") or ""))
+                        cart_quote_option = st.text_input(
+                            "Quote section / option",
+                            value=quote_option_label(item),
+                            key=f"cart-option-{line_id}",
+                            help="Use the same name to group products together, for example Option 1, Option 2, Living room, or Upstairs.",
+                        )
                         edit_size_cols = st.columns([1, 1, 0.8])
                         with edit_size_cols[0]:
                             cart_width = st.number_input(
@@ -6971,6 +7063,7 @@ def cart_page() -> None:
                             frame=str(cart_frame),
                             color=str(cart_color),
                             notes=str(cart_notes),
+                            quote_option=str(cart_quote_option),
                         ):
                             save_customer_cart(st.session_state.active_customer_id)
                             st.rerun()
@@ -7100,11 +7193,20 @@ def cart_page() -> None:
             if shipping_fee
             else ""
         )
+        option_summary_lines = "".join(
+            (
+                '<div style="display:flex;justify-content:space-between;margin-top:10px">'
+                f'<span class="muted">{html.escape(option_name)}</span>'
+                f"<span>{money(quote_option_subtotal(option_items))}</span></div>"
+            )
+            for option_name, option_items in grouped_quote_items(included_cart_items())
+        )
         st.markdown(
             f"""
             <div class="summary-card">
               <div class="eyebrow" style="color:#b9c7bf">Project summary</div>
               <div style="display:flex;justify-content:space-between;margin-top:18px"><span class="muted">Products included</span><span>{len(included_cart_items())} / {len(st.session_state.cart)}</span></div>
+              {option_summary_lines}
               <div style="display:flex;justify-content:space-between;margin-top:10px"><span class="muted">Subtotal</span><span>{money(subtotal)}</span></div>
               <div style="display:flex;justify-content:space-between;margin-top:10px"><span class="muted">{discount_label or 'Discount'}</span><span>{'-' + money(discount) if discount else money(0)}</span></div>
               {tax_summary_line}
@@ -7317,12 +7419,15 @@ def order_checkout_page() -> None:
             st.rerun()
     with review_col:
         st.markdown("### Order review")
-        for item in quote_items:
-            color_label = item_color_label(item)
-            color_note = f" · {color_label}" if color_label else ""
-            area_sqft = float(item.get("area_sqft") or (float(item.get("width") or 0) * float(item.get("height") or 0) / 144))
-            st.markdown(f"**{item['name']} × {item['quantity']}**  \n{item['width']:.1f}\" × {item['height']:.1f}\" · {area_sqft:.2f} sq ft{color_note} · {money(item['line_total'])}")
-        st.divider()
+        for option_name, option_items in grouped_quote_items(quote_items):
+            st.markdown(f"#### {option_name}")
+            st.caption(f"Section subtotal: {money(quote_option_subtotal(option_items))}")
+            for item in option_items:
+                color_label = item_color_label(item)
+                color_note = f" · {color_label}" if color_label else ""
+                area_sqft = float(item.get("area_sqft") or (float(item.get("width") or 0) * float(item.get("height") or 0) / 144))
+                st.markdown(f"**{item['name']} × {item['quantity']}**  \n{item['width']:.1f}\" × {item['height']:.1f}\" · {area_sqft:.2f} sq ft{color_note} · {money(item['line_total'])}")
+            st.divider()
         st.markdown(f"**Subtotal:** {money(float(adjustments.get('subtotal') or 0))}")
         if float(adjustments.get("discount") or 0):
             st.markdown(f"**Discount:** -{money(float(adjustments.get('discount') or 0))}")
@@ -7428,38 +7533,60 @@ def build_quote_pdf(quote: dict[str, Any]) -> bytes:
     story.append(info)
     data = [[Paragraph("<b>IMAGE</b>", styles["Tiny"]), Paragraph("<b>PRODUCT / CONFIGURATION</b>", styles["Tiny"]), Paragraph("<b>QTY</b>", styles["Tiny"]), Paragraph("<b>UNIT</b>", styles["Tiny"]), Paragraph("<b>AMOUNT</b>", styles["Tiny"])]]
     pdf_items = [item for item in quote.get("items", []) if cart_item_included(item)]
-    for item in pdf_items:
-        description = (
-            f"<b>{pdf_text(item.get('name'))}</b><br/>"
-            f"{float(item.get('width') or 0):.1f}\" W x {float(item.get('height') or 0):.1f}\" H | {pdf_text(item.get('direction'))}<br/>"
-            f"{pdf_text(item.get('glass'))} glass | {pdf_text(item.get('frame'))} finish"
-        )
-        color_label = item_color_label(item)
-        if color_label:
-            description += f" | {pdf_text(color_label)}"
-        if item.get("notes"):
-            description += f"<br/><font color='#68736d'>Note: {pdf_text(item.get('notes'))}</font>"
-        data.append([
-            quote_item_thumbnail(item),
-            Paragraph(description, styles["Small"]),
-            Paragraph(str(item["quantity"]), styles["Small"]),
-            Paragraph(money(item["unit_price"]), styles["RightSmall"]),
-            Paragraph(money(item["line_total"]), styles["RightSmall"]),
-        ])
-    item_table = Table(data, colWidths=[0.95 * inch, 3.45 * inch, 0.5 * inch, 0.9 * inch, 1.1 * inch], repeatRows=1)
-    item_table.setStyle(
-        TableStyle(
+    option_row_indexes: list[int] = []
+    for option_name, option_items in grouped_quote_items(pdf_items):
+        option_row_indexes.append(len(data))
+        data.append(
             [
-                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor(BRAND_LIGHT)),
-                ("TEXTCOLOR", (0, 0), (-1, 0), colors.HexColor(BRAND_BLUE)),
-                ("VALIGN", (0, 0), (-1, -1), "TOP"),
-                ("TOPPADDING", (0, 0), (-1, -1), 9),
-                ("BOTTOMPADDING", (0, 0), (-1, -1), 9),
-                ("LINEBELOW", (0, 1), (-1, -1), 0.5, colors.HexColor("#D7E3EE")),
-                ("ALIGN", (0, 1), (0, -1), "CENTER"),
-                ("ALIGN", (2, 0), (-1, -1), "RIGHT"),
+                Paragraph(f"<b>{pdf_text(option_name)}</b>", styles["Small"]),
+                "",
+                "",
+                Paragraph("<b>SECTION SUBTOTAL</b>", styles["Tiny"]),
+                Paragraph(f"<b>{money(quote_option_subtotal(option_items))}</b>", styles["RightSmall"]),
             ]
         )
+        for item in option_items:
+            description = (
+                f"<b>{pdf_text(item.get('name'))}</b><br/>"
+                f"{float(item.get('width') or 0):.1f}\" W x {float(item.get('height') or 0):.1f}\" H | {pdf_text(item.get('direction'))}<br/>"
+                f"{pdf_text(item.get('glass'))} glass | {pdf_text(item.get('frame'))} finish"
+            )
+            color_label = item_color_label(item)
+            if color_label:
+                description += f" | {pdf_text(color_label)}"
+            if item.get("notes"):
+                description += f"<br/><font color='#68736d'>Note: {pdf_text(item.get('notes'))}</font>"
+            data.append([
+                quote_item_thumbnail(item),
+                Paragraph(description, styles["Small"]),
+                Paragraph(str(item["quantity"]), styles["Small"]),
+                Paragraph(money(item["unit_price"]), styles["RightSmall"]),
+                Paragraph(money(item["line_total"]), styles["RightSmall"]),
+            ])
+    item_table = Table(data, colWidths=[0.95 * inch, 3.45 * inch, 0.5 * inch, 0.9 * inch, 1.1 * inch], repeatRows=1)
+    item_table_styles = [
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor(BRAND_LIGHT)),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.HexColor(BRAND_BLUE)),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("TOPPADDING", (0, 0), (-1, -1), 9),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 9),
+        ("LINEBELOW", (0, 1), (-1, -1), 0.5, colors.HexColor("#D7E3EE")),
+        ("ALIGN", (0, 1), (0, -1), "CENTER"),
+        ("ALIGN", (2, 0), (-1, -1), "RIGHT"),
+    ]
+    for row_index in option_row_indexes:
+        item_table_styles.extend(
+            [
+                ("BACKGROUND", (0, row_index), (-1, row_index), colors.HexColor("#EEF4F8")),
+                ("TEXTCOLOR", (0, row_index), (-1, row_index), colors.HexColor(BRAND_BLUE)),
+                ("SPAN", (0, row_index), (2, row_index)),
+                ("VALIGN", (0, row_index), (-1, row_index), "MIDDLE"),
+                ("LINEABOVE", (0, row_index), (-1, row_index), 0.8, colors.HexColor(BRAND_LINE)),
+                ("LINEBELOW", (0, row_index), (-1, row_index), 0.8, colors.HexColor(BRAND_LINE)),
+            ]
+        )
+    item_table.setStyle(
+        TableStyle(item_table_styles)
     )
     story.extend([item_table, Spacer(1, 14)])
     discount_amount = float(quote.get("discount", 0.0) or 0.0)
@@ -7563,31 +7690,52 @@ def build_receipt_pdf(
     ordered_items = ordered_items or []
     if ordered_items:
         product_rows = [[Paragraph("<b>ORDERED PRODUCTS</b>", styles["Tiny"]), Paragraph("<b>QTY</b>", styles["Tiny"]), Paragraph("<b>UNIT</b>", styles["Tiny"]), Paragraph("<b>AMOUNT</b>", styles["Tiny"])]]
-        for item in ordered_items:
-            quantity = int(item.get("quantity") or 1)
-            line_total = float(item.get("line_total") or 0)
-            unit_price = float(item.get("unit_price") or (line_total / quantity if quantity else 0))
+        receipt_option_rows: list[int] = []
+        for option_name, option_items in grouped_quote_items(ordered_items):
+            receipt_option_rows.append(len(product_rows))
             product_rows.append(
                 [
-                    Paragraph(receipt_product_description(item), styles["Small"]),
-                    Paragraph(str(quantity), styles["Small"]),
-                    Paragraph(money(unit_price), styles["RightSmall"]),
-                    Paragraph(money(line_total), styles["RightSmall"]),
+                    Paragraph(f"<b>{pdf_text(option_name)}</b>", styles["Small"]),
+                    "",
+                    Paragraph("<b>SECTION SUBTOTAL</b>", styles["Tiny"]),
+                    Paragraph(f"<b>{money(quote_option_subtotal(option_items))}</b>", styles["RightSmall"]),
                 ]
             )
+            for item in option_items:
+                quantity = int(item.get("quantity") or 1)
+                line_total = float(item.get("line_total") or 0)
+                unit_price = float(item.get("unit_price") or (line_total / quantity if quantity else 0))
+                product_rows.append(
+                    [
+                        Paragraph(receipt_product_description(item), styles["Small"]),
+                        Paragraph(str(quantity), styles["Small"]),
+                        Paragraph(money(unit_price), styles["RightSmall"]),
+                        Paragraph(money(line_total), styles["RightSmall"]),
+                    ]
+                )
         products_table = Table(product_rows, colWidths=[4.15 * inch, 0.55 * inch, 1.0 * inch, 1.2 * inch], repeatRows=1)
-        products_table.setStyle(
-            TableStyle(
+        product_table_styles = [
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor(BRAND_LIGHT)),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.HexColor(BRAND_BLUE)),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("TOPPADDING", (0, 0), (-1, -1), 8),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
+            ("LINEBELOW", (0, 1), (-1, -1), 0.5, colors.HexColor("#D7E3EE")),
+            ("ALIGN", (1, 0), (-1, -1), "RIGHT"),
+        ]
+        for row_index in receipt_option_rows:
+            product_table_styles.extend(
                 [
-                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor(BRAND_LIGHT)),
-                    ("TEXTCOLOR", (0, 0), (-1, 0), colors.HexColor(BRAND_BLUE)),
-                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
-                    ("TOPPADDING", (0, 0), (-1, -1), 8),
-                    ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
-                    ("LINEBELOW", (0, 1), (-1, -1), 0.5, colors.HexColor("#D7E3EE")),
-                    ("ALIGN", (1, 0), (-1, -1), "RIGHT"),
+                    ("BACKGROUND", (0, row_index), (-1, row_index), colors.HexColor("#EEF4F8")),
+                    ("TEXTCOLOR", (0, row_index), (-1, row_index), colors.HexColor(BRAND_BLUE)),
+                    ("SPAN", (0, row_index), (1, row_index)),
+                    ("VALIGN", (0, row_index), (-1, row_index), "MIDDLE"),
+                    ("LINEABOVE", (0, row_index), (-1, row_index), 0.8, colors.HexColor(BRAND_LINE)),
+                    ("LINEBELOW", (0, row_index), (-1, row_index), 0.8, colors.HexColor(BRAND_LINE)),
                 ]
             )
+        products_table.setStyle(
+            TableStyle(product_table_styles)
         )
         story.extend([products_table, Spacer(1, 14)])
     rows = [
@@ -8002,12 +8150,15 @@ def checkout_page() -> None:
                     st.success(f"Quote {quote['quote_number']} created and saved under {name}.")
     with review_col:
         st.markdown("### Quote review")
-        for item in quote_items:
-            color_label = item_color_label(item)
-            color_note = f" · {color_label}" if color_label else ""
-            st.markdown(f"**{item['name']} × {item['quantity']}**  \n{item['width']:.1f}\" × {item['height']:.1f}\"{color_note} · {money(item['line_total'])}")
-            if item.get("price_adjusted"):
-                st.caption(f"Adjusted unit price from {money(float(item.get('original_unit_price', item['unit_price'])))} to {money(float(item['unit_price']))}")
+        for option_name, option_items in grouped_quote_items(quote_items):
+            st.markdown(f"#### {option_name}")
+            st.caption(f"Section subtotal: {money(quote_option_subtotal(option_items))}")
+            for item in option_items:
+                color_label = item_color_label(item)
+                color_note = f" · {color_label}" if color_label else ""
+                st.markdown(f"**{item['name']} × {item['quantity']}**  \n{item['width']:.1f}\" × {item['height']:.1f}\"{color_note} · {money(item['line_total'])}")
+                if item.get("price_adjusted"):
+                    st.caption(f"Adjusted unit price from {money(float(item.get('original_unit_price', item['unit_price'])))} to {money(float(item['unit_price']))}")
             st.divider()
         st.metric("Subtotal", money(subtotal))
         st.metric(discount_label or "Discount", f"-{money(discount)}" if discount else money(0))
