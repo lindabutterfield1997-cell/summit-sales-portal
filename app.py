@@ -7082,7 +7082,8 @@ def cart_page() -> None:
                 included_count = sum(1 for group_item in group_items if cart_item_included(group_item))
                 section_identity = f"{st.session_state.active_customer_id or 'guest'}:{option_name.casefold()}"
                 section_token = hashlib.sha1(section_identity.encode("utf-8")).hexdigest()[:12]
-                section_panel = st.container(border=True)
+                section_panel_key = f"cart-section-panel-{section_token}"
+                section_panel = st.container(border=True, key=section_panel_key)
                 section_expanded_key = f"cart-section-expanded-{section_token}"
                 if section_expanded_key not in st.session_state:
                     st.session_state[section_expanded_key] = True
@@ -7099,18 +7100,39 @@ def cart_page() -> None:
                 st.session_state[section_sync_key] = section_enabled
                 section_total = sum(float(group_item.get("line_total") or 0.0) for group_item in group_items)
                 header_name, header_price, header_toggle = section_panel.columns(
-                    [5.4, 1.35, 0.35],
+                    [5.6, 1.15, 0.32],
                     vertical_alignment="center",
+                    gap="small",
                 )
                 expand_button_key = f"cart-section-expand-button-{section_token}"
                 section_panel.markdown(
                     f"""
                     <style>
+                    .st-key-{section_panel_key} {{
+                        background: #ffffff;
+                        border-color: #dfe6e1 !important;
+                        border-radius: 14px !important;
+                        box-shadow: 0 3px 14px rgba(31, 61, 51, 0.04);
+                        padding: 0.45rem 0.75rem 0.65rem !important;
+                    }}
                     .st-key-{expand_button_key} button {{
-                        justify-content: flex-start;
-                        padding-left: 0;
-                        font-size: 1.05rem;
-                        font-weight: 600;
+                        justify-content: flex-start !important;
+                        min-height: 38px !important;
+                        padding: 0.2rem 0.4rem !important;
+                        border: 0 !important;
+                        border-radius: 9px !important;
+                        background: transparent !important;
+                        box-shadow: none !important;
+                        color: #17201c !important;
+                        font-size: 1.02rem !important;
+                        font-weight: 650 !important;
+                    }}
+                    .st-key-{expand_button_key} button:hover {{
+                        background: #eef3ef !important;
+                        color: #1f3d33 !important;
+                    }}
+                    .st-key-{expand_button_key} button:focus {{
+                        box-shadow: none !important;
                     }}
                     </style>
                     """,
@@ -7127,11 +7149,14 @@ def cart_page() -> None:
                         st.rerun()
                 with header_price:
                     price_color = "#1f3d33" if section_enabled else "#8a918d"
+                    price_background = "#eef3ef" if section_enabled else "#f1f3f2"
                     st.markdown(
                         (
-                            "<div style='text-align:right;white-space:nowrap;"
-                            f"font-size:1.05rem;font-weight:650;color:{price_color};'>"
-                            f"{money(section_total)}</div>"
+                            "<div style='display:flex;justify-content:flex-end;align-items:center;'>"
+                            "<span style='white-space:nowrap;border-radius:999px;"
+                            f"padding:0.38rem 0.72rem;background:{price_background};"
+                            f"font-size:0.98rem;font-weight:700;color:{price_color};'>"
+                            f"{money(section_total)}</span></div>"
                         ),
                         unsafe_allow_html=True,
                     )
@@ -7154,7 +7179,7 @@ def cart_page() -> None:
                 if section_expanded:
                     current_option_expander = section_panel
                     current_option_expander.caption(
-                        f"{included_count if section_enabled else 0} of {len(group_items)} product line(s) included"
+                        f"{included_count if section_enabled else 0} of {len(group_items)} product line(s)"
                     )
                 else:
                     current_option_expander = None
