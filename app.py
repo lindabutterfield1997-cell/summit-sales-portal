@@ -443,7 +443,25 @@ def product_to_dict(product: Product) -> dict[str, Any]:
     data = asdict(product)
     for key in ("directions", "glass_colors", "frame_colors", "color_options", "detail_images"):
         data[key] = list(data[key])
+    data["color_images"] = dict(product.color_images)
     return data
+
+
+def normalize_color_images(value: Any) -> tuple[tuple[str, str], ...]:
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except (TypeError, ValueError):
+            value = {}
+    pairs = value.items() if isinstance(value, dict) else value or ()
+    normalized: dict[str, str] = {}
+    for pair in pairs:
+        if not isinstance(pair, (tuple, list)) or len(pair) != 2:
+            continue
+        color_name, filename = (str(part or "").strip() for part in pair)
+        if color_name and filename:
+            normalized[color_name] = filename
+    return tuple(normalized.items())
 
 
 def product_from_dict(data: dict[str, Any]) -> Product:
@@ -451,6 +469,7 @@ def product_from_dict(data: dict[str, Any]) -> Product:
     clean = {key: value for key, value in data.items() if key in allowed}
     for key in ("directions", "glass_colors", "frame_colors", "color_options", "detail_images"):
         clean[key] = tuple(clean.get(key, ()))
+    clean["color_images"] = normalize_color_images(clean.get("color_images"))
     if not clean.get("color_options"):
         clean["color_options"] = clean.get("frame_colors", ())
     return Product(**clean)
@@ -551,6 +570,56 @@ def image_path(product: Product, variant: str) -> Path:
 def detail_image_paths(product: Product) -> list[Path]:
     filenames = product.detail_images or (f"{product.id.lower()}-detail.png",)
     return [ASSET_DIR / filename for filename in filenames if (ASSET_DIR / filename).exists()]
+
+
+def product_color_image_map(product: Product) -> dict[str, str]:
+    return {
+        str(color_name).strip().casefold(): str(filename).strip()
+        for color_name, filename in product.color_images
+        if str(color_name).strip() and str(filename).strip()
+    }
+
+
+def configured_product_image_filename(product: Product, color_name: str = "") -> str:
+    mapped = product_color_image_map(product).get(str(color_name or "").strip().casefold())
+    return mapped or product.hero_image or f"{product.id.lower()}-hero.png"
+
+
+def configured_product_image_path(product: Product, color_name: str = "") -> Path:
+    selected = ASSET_DIR / configured_product_image_filename(product, color_name)
+    return selected if selected.exists() else image_path(product, "hero")
+
+
+def cart_item_image_path(item: dict[str, Any], product: Product | None = None) -> Path:
+    selected_image = str(item.get("selected_image") or "").strip()
+    if selected_image:
+        selected_path = ASSET_DIR / selected_image
+        if selected_path.exists():
+            return selected_path
+    resolved_product = product or get_product_or_none(str(item.get("product_id") or ""))
+    if resolved_product is not None:
+        return configured_product_image_path(resolved_product, str(item.get("color") or ""))
+    return ASSET_DIR / selected_image
+
+
+def product_gallery_paths(product: Product, selected_color: str = "") -> list[Path]:
+    filenames = [
+        configured_product_image_filename(product, selected_color),
+        product.hero_image,
+        *(filename for _, filename in product.color_images),
+        *product.detail_images,
+    ]
+    unique_paths: list[Path] = []
+    seen: set[str] = set()
+    for filename in filenames:
+        clean = str(filename or "").strip()
+        if not clean or clean in seen:
+            continue
+        seen.add(clean)
+        path = ASSET_DIR / clean
+        if path.exists():
+            unique_paths.append(path)
+    return unique_paths
 
 
 def opening_style_path(icon_id: str) -> Path:
@@ -834,6 +903,21 @@ def split_options(value: str) -> tuple[str, ...]:
     return tuple(option.strip() for option in re.split(r"[,，\n]", value) if option.strip())
 
 
+def parse_color_image_mapping(value: str) -> tuple[tuple[str, str], ...]:
+    mapping: dict[str, str] = {}
+    for raw_line in value.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        separator = "=" if "=" in line else "|" if "|" in line else ""
+        if not separator:
+            continue
+        color_name, filename = (part.strip() for part in line.split(separator, 1))
+        if color_name and filename:
+            mapping[color_name] = filename
+    return tuple(mapping.items())
+
+
 def safe_product_id(value: str) -> str:
     return re.sub(r"[^A-Z0-9-]", "", value.upper().replace(" ", "-"))[:30]
 
@@ -869,7 +953,11 @@ def normalize_existing_catalog_images() -> None:
     changed_products: list[Product] = []
     for product in PRODUCTS:
         updated_files: dict[str, str] = {}
-        source_names = [product.hero_image, *product.detail_images]
+        source_names = [
+            product.hero_image,
+            *product.detail_images,
+            *(filename for _, filename in product.color_images),
+        ]
         for index, source_name in enumerate(source_names):
             source = ASSET_DIR / source_name
             if not source.exists():
@@ -897,6 +985,10 @@ def normalize_existing_catalog_images() -> None:
                     **asdict(product),
                     "hero_image": updated_files.get(product.hero_image, product.hero_image),
                     "detail_images": tuple(updated_files.get(name, name) for name in product.detail_images),
+                    "color_images": tuple(
+                        (color_name, updated_files.get(filename, filename))
+                        for color_name, filename in product.color_images
+                    ),
                 }
             )
         )
@@ -1273,6 +1365,7 @@ SUPABASE_PRODUCT_COLUMNS = {
     "active",
     "updated_at",
     "color_options",
+    "color_images",
     "color_information",
     "stock_information",
 }
@@ -3543,6 +3636,7 @@ def wishlist_from_cart() -> list[dict[str, Any]]:
                 "glass": item.get("glass", ""),
                 "frame": item.get("frame", ""),
                 "color": item.get("color", ""),
+                "selected_image": item.get("selected_image", ""),
                 "width": item.get("width", 0),
                 "height": item.get("height", 0),
                 "quantity": item.get("quantity", 1),
@@ -3728,8 +3822,10 @@ def render_wishlist(wishlist: list[dict[str, Any]], selection_key: str = "", tit
                 select_col = None
             with image_col:
                 product = get_product_or_none(product_id) if product_id else None
-                if product and image_path(product, "hero").exists():
-                    st.image(str(image_path(product, "hero")), width="stretch")
+                if product:
+                    selected_path = cart_item_image_path(item, product)
+                    if selected_path.exists():
+                        st.image(str(selected_path), width="stretch")
             with info_col:
                 st.markdown(line)
                 if product_id:
@@ -4102,6 +4198,7 @@ def update_cart_item_configuration(
     item["glass"] = glass
     item["frame"] = frame
     item["color"] = color
+    item["selected_image"] = configured_product_image_filename(product, color)
     item["width"] = width
     item["height"] = height
     item["quantity"] = quantity
@@ -4151,6 +4248,12 @@ def normalize_cart_item(item: dict[str, Any], index: int = 0) -> bool:
     if "included_in_quote" not in item:
         item["included_in_quote"] = True
         changed = True
+    product = get_product_or_none(str(item.get("product_id") or ""))
+    if product is not None:
+        expected_image = configured_product_image_filename(product, str(item.get("color") or ""))
+        if item.get("selected_image") != expected_image:
+            item["selected_image"] = expected_image
+            changed = True
     normalized_option = quote_option_label(item)
     if item.get("quote_option") != normalized_option:
         item["quote_option"] = normalized_option
@@ -4167,6 +4270,7 @@ def cart_merge_key(item: dict[str, Any]) -> tuple[Any, ...]:
         str(item.get("glass") or "").strip().lower(),
         str(item.get("frame") or "").strip().lower(),
         str(item.get("color") or "").strip().lower(),
+        str(item.get("selected_image") or "").strip().lower(),
         str(item.get("notes") or "").strip().lower(),
         round(float(item.get("unit_price") or 0), 2),
         round(float(item.get("original_unit_price", item.get("unit_price", 0)) or 0), 2),
@@ -6711,23 +6815,24 @@ def configure_page(product: Product) -> None:
             st.session_state[key] = options[0]
     selected_glass = st.session_state[f"config-{product.id}-glass"]
     selected_direction = st.session_state[f"config-{product.id}-direction"]
+    selected_color = st.session_state[f"config-{product.id}-color"]
     mirror_preview = should_mirror_for_direction(selected_direction, product)
     image_col, form_col = st.columns([1.15, 0.85], gap="large")
     with image_col:
-        hero_path = image_path(product, "hero")
+        hero_path = configured_product_image_path(product, selected_color)
         st.image(configured_preview_bytes(str(hero_path), selected_glass, mirror_preview), width="stretch")
         st.caption(
-            f"Preview shown as {selected_direction}, viewed from outside facing inside."
+            f"{selected_color} preview · {selected_direction}, viewed from outside facing inside."
             if mirror_preview
-            else "Preview shown from outside facing inside."
+            else f"{selected_color} product preview."
         )
-        gallery = [image_path(product, "hero")] + detail_image_paths(product)
+        gallery = product_gallery_paths(product, selected_color)
         columns = st.columns(min(3, len(gallery)))
         for index, path in enumerate(gallery):
             with columns[index % len(columns)]:
                 st.image(
                     configured_preview_bytes(str(path), selected_glass, mirror_preview),
-                    caption="Effect / room view" if index == 0 else f"Product detail {index}",
+                    caption=f"{selected_color} selected image" if index == 0 else f"Product image {index + 1}",
                     width="stretch",
                 )
     with form_col:
@@ -6809,6 +6914,7 @@ def configure_page(product: Product) -> None:
                 "glass": glass,
                 "frame": frame,
                 "color": color,
+                "selected_image": configured_product_image_filename(product, color),
                 "width": width,
                 "height": height,
                 "quantity": int(quantity),
@@ -6974,13 +7080,13 @@ def cart_page() -> None:
                 group_items = option_group_items[option_name]
                 section_enabled = any(cart_item_included(group_item) for group_item in group_items)
                 included_count = sum(1 for group_item in group_items if cart_item_included(group_item))
-                section_status = money(quote_option_subtotal(group_items)) if section_enabled else "Not included"
-                current_option_expander = st.expander(
-                    f"{option_name} · {section_status}",
-                    expanded=True,
-                )
                 section_identity = f"{st.session_state.active_customer_id or 'guest'}:{option_name.casefold()}"
                 section_token = hashlib.sha1(section_identity.encode("utf-8")).hexdigest()[:12]
+                section_panel = st.container(border=True)
+                section_expanded_key = f"cart-section-expanded-{section_token}"
+                if section_expanded_key not in st.session_state:
+                    st.session_state[section_expanded_key] = True
+                section_expanded = bool(st.session_state[section_expanded_key])
                 section_toggle_key = f"cart-section-enabled-{section_token}"
                 section_sync_key = f"cart-section-enabled-sync-{section_token}"
                 last_section_state = st.session_state.get(section_sync_key)
@@ -6991,11 +7097,51 @@ def cart_page() -> None:
                 ):
                     st.session_state[section_toggle_key] = section_enabled
                 st.session_state[section_sync_key] = section_enabled
-                include_section = current_option_expander.toggle(
-                    "Include this section in quote / order total",
-                    key=section_toggle_key,
-                    help="Turn this off to keep every product in this section in the cart without including its price or products in the quote or order.",
+                section_total = sum(float(group_item.get("line_total") or 0.0) for group_item in group_items)
+                header_name, header_price, header_toggle = section_panel.columns(
+                    [5.4, 1.35, 0.35],
+                    vertical_alignment="center",
                 )
+                expand_button_key = f"cart-section-expand-button-{section_token}"
+                section_panel.markdown(
+                    f"""
+                    <style>
+                    .st-key-{expand_button_key} button {{
+                        justify-content: flex-start;
+                        padding-left: 0;
+                        font-size: 1.05rem;
+                        font-weight: 600;
+                    }}
+                    </style>
+                    """,
+                    unsafe_allow_html=True,
+                )
+                with header_name:
+                    if st.button(
+                        f"{'⌄' if section_expanded else '›'}  {option_name}",
+                        key=expand_button_key,
+                        type="tertiary",
+                        width="stretch",
+                    ):
+                        st.session_state[section_expanded_key] = not section_expanded
+                        st.rerun()
+                with header_price:
+                    price_color = "#1f3d33" if section_enabled else "#8a918d"
+                    st.markdown(
+                        (
+                            "<div style='text-align:right;white-space:nowrap;"
+                            f"font-size:1.05rem;font-weight:650;color:{price_color};'>"
+                            f"{money(section_total)}</div>"
+                        ),
+                        unsafe_allow_html=True,
+                    )
+                with header_toggle:
+                    include_section = st.toggle(
+                        "Include section",
+                        key=section_toggle_key,
+                        label_visibility="collapsed",
+                        help="Include or exclude every product in this section from the quote and order total.",
+                    )
                 if include_section != section_enabled:
                     for group_item in group_items:
                         group_item["included_in_quote"] = bool(include_section)
@@ -7005,16 +7151,13 @@ def cart_page() -> None:
                     st.session_state[section_sync_key] = bool(include_section)
                     save_customer_cart(st.session_state.active_customer_id)
                     st.rerun()
-                if section_enabled:
+                if section_expanded:
+                    current_option_expander = section_panel
                     current_option_expander.caption(
-                        f"{included_count} of {len(group_items)} product line(s) included · "
-                        f"Section subtotal: {money(quote_option_subtotal(group_items))}"
+                        f"{included_count if section_enabled else 0} of {len(group_items)} product line(s) included"
                     )
                 else:
-                    current_option_expander.caption(
-                        f"0 of {len(group_items)} product line(s) included · "
-                        "This section is excluded from the quote and order total."
-                    )
+                    current_option_expander = None
             product = get_product_or_none(str(item.get("product_id") or ""))
             if product is None:
                 st.warning(f"A cart item references a deleted product ({item.get('product_id')}). It was removed from this cart.")
@@ -7027,7 +7170,9 @@ def cart_page() -> None:
             with current_option_expander.container(border=True):
                 image, info, action = st.columns([0.85, 2.6, 0.65], vertical_alignment="center")
                 with image:
-                    st.image(str(image_path(product, "hero")), width="stretch")
+                    selected_path = cart_item_image_path(item, product)
+                    if selected_path.exists():
+                        st.image(str(selected_path), width="stretch")
                 with info:
                     included = cart_item_included(item)
                     color_label = item_color_label(item)
@@ -7544,7 +7689,7 @@ def quote_number() -> str:
 def quote_item_thumbnail(item: dict[str, Any]) -> RLImage | str:
     try:
         product = get_product(str(item.get("product_id", "")))
-        path = image_path(product, "hero")
+        path = cart_item_image_path(item, product)
     except Exception:
         path = None
     if not path or not path.exists():
@@ -8371,6 +8516,32 @@ def product_editor(existing: Product | None, form_key: str) -> None:
                 height=110,
                 placeholder="In stock, made to order, warehouse notes, expected restock date...",
             )
+        st.markdown("#### Color-specific product images")
+        st.caption(
+            "Map one color to one image path using `Color = uploads/image.webp`. "
+            "The selected color image will be used in the product preview, cart, and quote PDF."
+        )
+        color_image_col, color_upload_col = st.columns(2)
+        with color_image_col:
+            color_images_text = st.text_area(
+                "Color image mapping",
+                value="\n".join(
+                    f"{color_name} = {filename}"
+                    for color_name, filename in product.color_images
+                ),
+                height=110,
+                placeholder="Walnut = uploads/wd-650-walnut.webp",
+            )
+        with color_upload_col:
+            color_image_name = st.text_input(
+                "Color name for new image",
+                placeholder="Walnut",
+            )
+            color_image_upload = st.file_uploader(
+                "Upload image for this color",
+                type=("png", "jpg", "jpeg", "webp"),
+                key=f"{form_key}-color-image",
+            )
         st.markdown("#### Product images")
         st.caption("All uploads are automatically centered, cropped and compressed to 1500 × 1000 pixels (3:2). The original file is kept as a backup.")
         image1, image2 = st.columns(2)
@@ -8402,9 +8573,21 @@ def product_editor(existing: Product | None, form_key: str) -> None:
                 return
             hero_image = product.hero_image
             details = list(product.detail_images)
+            color_images = dict(parse_color_image_mapping(color_images_text))
             try:
                 if hero_upload is not None:
                     hero_image = save_uploaded_image(hero_upload, clean_id, "hero")
+                if color_image_upload is not None:
+                    clean_color_name = color_image_name.strip()
+                    if not clean_color_name:
+                        st.error("Enter the color name for the uploaded color-specific image.")
+                        return
+                    color_slug = safe_product_id(clean_color_name).lower() or "variant"
+                    color_images[clean_color_name] = save_uploaded_image(
+                        color_image_upload,
+                        clean_id,
+                        f"color-{color_slug}",
+                    )
                 if detail_uploads:
                     uploaded_details = [
                         save_uploaded_image(upload, clean_id, f"detail-{index + 1}")
@@ -8428,6 +8611,7 @@ def product_editor(existing: Product | None, form_key: str) -> None:
                     glass_colors=split_options(glass_colors),
                     frame_colors=split_options(frame_colors),
                     color_options=split_options(color_options),
+                    color_images=tuple(color_images.items()),
                     accent=accent,
                     hero_image=hero_image,
                     detail_images=tuple(dict.fromkeys(details)),

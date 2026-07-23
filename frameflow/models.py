@@ -20,6 +20,6 @@ class Product:
     active: bool = True
     updated_at: str = ""
     color_options: tuple[str, ...] = ()
+    color_images: tuple[tuple[str, str], ...] = ()
     color_information: str = ""
     stock_information: str = ""
-

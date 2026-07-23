@@ -19,6 +19,7 @@ create table if not exists public.products (
     active boolean not null default true,
     updated_at timestamptz,
     color_options jsonb not null default '[]'::jsonb,
+    color_images jsonb not null default '{}'::jsonb,
     color_information text default '',
     stock_information text default '',
     created_at timestamptz not null default now()
