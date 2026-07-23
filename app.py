@@ -7131,6 +7131,9 @@ def cart_page() -> None:
                         background: #eef3ef !important;
                         color: #1f3d33 !important;
                     }}
+                    .st-key-{expand_button_key} button > div {{
+                        justify-content: flex-start !important;
+                    }}
                     .st-key-{expand_button_key} button:focus {{
                         box-shadow: none !important;
                     }}
