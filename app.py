@@ -587,7 +587,10 @@ def configured_product_image_filename(product: Product, color_name: str = "") ->
 
 def configured_product_image_path(product: Product, color_name: str = "") -> Path:
     selected = ASSET_DIR / configured_product_image_filename(product, color_name)
-    return selected if selected.exists() else image_path(product, "hero")
+    if selected.exists():
+        return selected
+    hero = image_path(product, "hero")
+    return hero if hero.exists() else COMPANY_LOGO_PATH
 
 
 def cart_item_image_path(item: dict[str, Any], product: Product | None = None) -> Path:
@@ -6489,7 +6492,7 @@ def opening_style_grid(section: str) -> None:
 
 
 def product_card(product: Product) -> None:
-    st.image(str(image_path(product, "hero")), width="stretch")
+    st.image(str(configured_product_image_path(product)), width="stretch")
     st.markdown(
         f"""
         <div style="min-height:104px">
