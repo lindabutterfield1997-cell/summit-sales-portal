@@ -3495,6 +3495,8 @@ def finance_order_records() -> list[dict[str, Any]]:
         owner = customer_owner_filter()
         for row in order_rows:
             customer = finance_customer_by_id(int(row["customer_id"]))
+            if customer and str(row_value(customer, "status", "")).strip().lower() != "ordered":
+                continue
             assigned_to = canonical_employee_name(row_value(customer, "assigned_to", ""))
             order_salesperson = canonical_employee_name(row_value(row, "salesperson", ""))
             sales_name = assigned_to or order_salesperson or "Unassigned"
