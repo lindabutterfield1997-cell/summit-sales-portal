@@ -34,6 +34,8 @@ from reportlab.platypus import (
     TableStyle,
 )
 
+SHOWROOM_ADDRESS = "Showroom: 580 W Lambert Road, Brea, CA"
+
 from frameflow.auth import (
     admin_password,
     authenticate_from_daily_query,
@@ -7773,6 +7775,19 @@ def branded_pdf_header(document_label: str, document_number: str, styles: dict[s
     return header
 
 
+def quote_pdf_footer(canvas: Any, doc: Any) -> None:
+    canvas.saveState()
+    page_width, _ = canvas._pagesize
+    y = 0.32 * inch
+    canvas.setStrokeColor(colors.HexColor(BRAND_LINE))
+    canvas.setLineWidth(0.5)
+    canvas.line(doc.leftMargin, y + 0.14 * inch, page_width - doc.rightMargin, y + 0.14 * inch)
+    canvas.setFillColor(colors.HexColor("#5f6f86"))
+    canvas.setFont("Helvetica", 8)
+    canvas.drawCentredString(page_width / 2, y, SHOWROOM_ADDRESS)
+    canvas.restoreState()
+
+
 def build_quote_pdf(quote: dict[str, Any]) -> bytes:
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(
@@ -7901,7 +7916,7 @@ def build_quote_pdf(quote: dict[str, Any]) -> bytes:
     story.append(Paragraph("This document is an estimate based on the dimensions and options provided. Final pricing is subject to field verification, engineering review, delivery, installation requirements, applicable taxes, and written order confirmation. Product images are illustrative.", styles["Tiny"]))
     if quote.get("project_notes"):
         story.extend([Spacer(1, 8), Paragraph(f"<b>Project notes:</b> {quote['project_notes']}", styles["Tiny"])])
-    doc.build(story)
+    doc.build(story, onFirstPage=quote_pdf_footer, onLaterPages=quote_pdf_footer)
     return buffer.getvalue()
 
 
