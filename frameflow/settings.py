@@ -9,6 +9,7 @@ DATA_DIR = APP_DIR / "data"
 PRODUCT_FILE = DATA_DIR / "products.json"
 IMAGE_MIGRATION_MARKER = DATA_DIR / ".image-ratio-3x2-v1"
 PRODUCT_IMAGE_SIZE = (1500, 1000)
+PRODUCT_IMAGE_BUCKET = "product-images"
 OUTPUT_DIR = APP_DIR / "output" / "pdf"
 DB_PATH = APP_DIR / "quotes.db"
 DB_TIMEOUT_SECONDS = 30

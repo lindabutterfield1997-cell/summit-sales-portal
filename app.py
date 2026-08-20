@@ -16,7 +16,7 @@ from datetime import date, datetime, timedelta
 from email.message import EmailMessage
 from pathlib import Path
 from typing import Any, Sequence
-from urllib import parse
+from urllib import parse, request as url_request
 
 import streamlit as st
 from PIL import Image, ImageDraw, ImageFont, ImageOps
@@ -81,6 +81,7 @@ from frameflow.settings import (
     ORIGINAL_UPLOAD_DIR,
     OUTPUT_DIR,
     PRODUCT_FILE,
+    PRODUCT_IMAGE_BUCKET,
     PRODUCT_IMAGE_SIZE,
     STOCK_COMMISSION_RATE,
     UPLOAD_DIR,
@@ -88,6 +89,8 @@ from frameflow.settings import (
 from frameflow.supabase_client import (
     configured as supabase_configured,
     request as supabase_request,
+    storage_public_url as supabase_storage_public_url,
+    upload_storage_object as supabase_upload_storage_object,
 )
 
 
@@ -607,24 +610,69 @@ def cart_item_image_path(item: dict[str, Any], product: Product | None = None) -
     return ASSET_DIR / selected_image
 
 
-def product_gallery_paths(product: Product, selected_color: str = "") -> list[Path]:
+def product_image_public_url(filename: str) -> str:
+    clean = str(filename or "").strip()
+    if not clean:
+        return ""
+    if clean.startswith(("http://", "https://")):
+        return clean
+    if not supabase_configured():
+        return ""
+    return supabase_storage_public_url(PRODUCT_IMAGE_BUCKET, clean)
+
+
+def product_image_source_from_filename(filename: str, *, fallback_logo: bool = True) -> str:
+    clean = str(filename or "").strip()
+    if clean.startswith(("http://", "https://")):
+        return clean
+    if clean:
+        local_path = ASSET_DIR / clean
+        if local_path.exists():
+            return str(local_path)
+        public_url = product_image_public_url(clean)
+        if public_url:
+            return public_url
+    return str(COMPANY_LOGO_PATH) if fallback_logo and COMPANY_LOGO_PATH.exists() else ""
+
+
+def configured_product_image_source(product: Product, color_name: str = "") -> str:
+    return product_image_source_from_filename(configured_product_image_filename(product, color_name))
+
+
+def cart_item_image_source(item: dict[str, Any], product: Product | None = None) -> str:
+    selected_image = str(item.get("selected_image") or "").strip()
+    if selected_image:
+        source = product_image_source_from_filename(selected_image, fallback_logo=False)
+        if source:
+            return source
+    resolved_product = product or get_product_or_none(str(item.get("product_id") or ""))
+    if resolved_product is not None:
+        return configured_product_image_source(resolved_product, str(item.get("color") or ""))
+    return product_image_source_from_filename(selected_image)
+
+
+def product_gallery_sources(product: Product, selected_color: str = "") -> list[str]:
     filenames = [
         configured_product_image_filename(product, selected_color),
         product.hero_image,
         *(filename for _, filename in product.color_images),
         *product.detail_images,
     ]
-    unique_paths: list[Path] = []
+    unique_sources: list[str] = []
     seen: set[str] = set()
     for filename in filenames:
         clean = str(filename or "").strip()
         if not clean or clean in seen:
             continue
         seen.add(clean)
-        path = ASSET_DIR / clean
-        if path.exists():
-            unique_paths.append(path)
-    return unique_paths
+        source = product_image_source_from_filename(clean, fallback_logo=False)
+        if source:
+            unique_sources.append(source)
+    return unique_sources
+
+
+def product_gallery_paths(product: Product, selected_color: str = "") -> list[Path]:
+    return [Path(source) for source in product_gallery_sources(product, selected_color) if not source.startswith(("http://", "https://"))]
 
 
 def opening_style_path(icon_id: str) -> Path:
@@ -946,7 +994,15 @@ def save_uploaded_image(uploaded_file: Any, product_id: str, label: str) -> str:
         centering=(0.5, 0.5),
     )
     filename = f"uploads/{product_id.lower()}-{label}-{stamp}.webp"
-    image.save(ASSET_DIR / filename, "WEBP", quality=86, method=6)
+    output_path = ASSET_DIR / filename
+    image.save(output_path, "WEBP", quality=86, method=6)
+    if supabase_configured():
+        supabase_upload_storage_object(
+            PRODUCT_IMAGE_BUCKET,
+            filename,
+            output_path.read_bytes(),
+            content_type="image/webp",
+        )
     return filename
 
 
@@ -3830,9 +3886,9 @@ def render_wishlist(wishlist: list[dict[str, Any]], selection_key: str = "", tit
             with image_col:
                 product = get_product_or_none(product_id) if product_id else None
                 if product:
-                    selected_path = cart_item_image_path(item, product)
-                    if selected_path.exists():
-                        st.image(str(selected_path), width="stretch")
+                    selected_source = cart_item_image_source(item, product)
+                    if selected_source:
+                        st.image(selected_source, width="stretch")
             with info_col:
                 st.markdown(line)
                 if product_id:
@@ -6496,7 +6552,7 @@ def opening_style_grid(section: str) -> None:
 
 
 def product_card(product: Product) -> None:
-    st.image(str(configured_product_image_path(product)), width="stretch")
+    st.image(configured_product_image_source(product), width="stretch")
     st.markdown(
         f"""
         <div style="min-height:104px">
@@ -6614,8 +6670,13 @@ def configuration_stock_panel(
 
 
 @st.cache_data(show_spinner=False)
-def configured_preview_bytes(image_file: str, glass: str, mirror: bool = False) -> bytes:
-    image = Image.open(image_file).convert("RGBA")
+def configured_preview_bytes(image_reference: str, glass: str, mirror: bool = False) -> bytes:
+    if image_reference.startswith(("http://", "https://")):
+        with url_request.urlopen(image_reference, timeout=15) as response:
+            image_bytes = response.read()
+        image = Image.open(io.BytesIO(image_bytes)).convert("RGBA")
+    else:
+        image = Image.open(image_reference).convert("RGBA")
     if mirror:
         image = ImageOps.mirror(image)
     buffer = io.BytesIO()
@@ -6826,22 +6887,23 @@ def configure_page(product: Product) -> None:
     mirror_preview = should_mirror_for_direction(selected_direction, product)
     image_col, form_col = st.columns([1.15, 0.85], gap="large")
     with image_col:
-        hero_path = configured_product_image_path(product, selected_color)
-        st.image(configured_preview_bytes(str(hero_path), selected_glass, mirror_preview), width="stretch")
+        hero_source = configured_product_image_source(product, selected_color)
+        st.image(configured_preview_bytes(hero_source, selected_glass, mirror_preview), width="stretch")
         st.caption(
             f"{selected_color} preview · {selected_direction}, viewed from outside facing inside."
             if mirror_preview
             else f"{selected_color} product preview."
         )
-        gallery = product_gallery_paths(product, selected_color)
-        columns = st.columns(min(3, len(gallery)))
-        for index, path in enumerate(gallery):
-            with columns[index % len(columns)]:
-                st.image(
-                    configured_preview_bytes(str(path), selected_glass, mirror_preview),
-                    caption=f"{selected_color} selected image" if index == 0 else f"Product image {index + 1}",
-                    width="stretch",
-                )
+        gallery = product_gallery_sources(product, selected_color)
+        if gallery:
+            columns = st.columns(min(3, len(gallery)))
+            for index, source in enumerate(gallery):
+                with columns[index % len(columns)]:
+                    st.image(
+                        configured_preview_bytes(source, selected_glass, mirror_preview),
+                        caption=f"{selected_color} selected image" if index == 0 else f"Product image {index + 1}",
+                        width="stretch",
+                    )
     with form_col:
         st.markdown(f'<div class="eyebrow">{product.category} · {product.id}</div>', unsafe_allow_html=True)
         st.title(product.name)
@@ -7205,9 +7267,9 @@ def cart_page() -> None:
             with current_option_expander.container(border=True):
                 image, info, action = st.columns([0.85, 2.6, 0.65], vertical_alignment="center")
                 with image:
-                    selected_path = cart_item_image_path(item, product)
-                    if selected_path.exists():
-                        st.image(str(selected_path), width="stretch")
+                    selected_source = cart_item_image_source(item, product)
+                    if selected_source:
+                        st.image(selected_source, width="stretch")
                 with info:
                     included = cart_item_included(item)
                     color_label = item_color_label(item)
@@ -7724,12 +7786,23 @@ def quote_number() -> str:
 def quote_item_thumbnail(item: dict[str, Any]) -> RLImage | str:
     try:
         product = get_product(str(item.get("product_id", "")))
-        path = cart_item_image_path(item, product)
+        source = cart_item_image_source(item, product)
     except Exception:
-        path = None
-    if not path or not path.exists():
+        source = ""
+    if not source:
         return ""
-    thumbnail = RLImage(str(path), width=0.82 * inch, height=0.55 * inch)
+    try:
+        if source.startswith(("http://", "https://")):
+            with url_request.urlopen(source, timeout=15) as response:
+                image_data = io.BytesIO(response.read())
+            thumbnail = RLImage(image_data, width=0.82 * inch, height=0.55 * inch)
+        else:
+            path = Path(source)
+            if not path.exists():
+                return ""
+            thumbnail = RLImage(str(path), width=0.82 * inch, height=0.55 * inch)
+    except Exception:
+        return ""
     thumbnail.hAlign = "CENTER"
     return thumbnail
 
@@ -8595,8 +8668,10 @@ def product_editor(existing: Product | None, form_key: str) -> None:
         image1, image2 = st.columns(2)
         with image1:
             hero_upload = st.file_uploader("Replace main product image", type=("png", "jpg", "jpeg", "webp"), key=f"{form_key}-hero")
-            if is_edit and image_path(product, "hero").exists():
-                st.image(str(image_path(product, "hero")), caption="Current main image", width="stretch")
+            if is_edit:
+                current_image_source = configured_product_image_source(product)
+                if current_image_source:
+                    st.image(current_image_source, caption="Current main image", width="stretch")
         with image2:
             detail_uploads = st.file_uploader(
                 "Add product detail images",
@@ -8721,11 +8796,11 @@ def admin_page() -> None:
                 or most_recent_product()
             )
             if recent:
-                recent_image = image_path(recent, "hero")
+                recent_image = configured_product_image_source(recent)
                 recent_col, recent_text = st.columns([0.8, 4], vertical_alignment="center")
                 with recent_col:
-                    if recent_image.exists():
-                        st.image(str(recent_image), width="stretch")
+                    if recent_image:
+                        st.image(recent_image, width="stretch")
                 with recent_text:
                     st.success(f"Recently edited: {recent.name} · {recent.id}")
                     st.caption(f"{recent.section} / {recent.category}")

@@ -75,3 +75,37 @@ def request(
 
     return json.loads(body) if body else []
 
+def storage_public_url(bucket: str, object_path: str) -> str:
+    clean_bucket = str(bucket or "").strip().strip("/")
+    clean_path = str(object_path or "").strip().lstrip("/")
+    if not clean_bucket or not clean_path:
+        return ""
+    encoded_bucket = parse.quote(clean_bucket, safe="")
+    encoded_path = parse.quote(clean_path, safe="/")
+    return f"{base_url()}/storage/v1/object/public/{encoded_bucket}/{encoded_path}"
+
+def upload_storage_object(bucket: str, object_path: str, data: bytes, content_type: str = "application/octet-stream") -> None:
+    clean_bucket = str(bucket or "").strip().strip("/")
+    clean_path = str(object_path or "").strip().lstrip("/")
+    if not clean_bucket or not clean_path:
+        raise RuntimeError("Supabase Storage bucket and object path are required.")
+    encoded_bucket = parse.quote(clean_bucket, safe="")
+    encoded_path = parse.quote(clean_path, safe="/")
+    url = f"{base_url()}/storage/v1/object/{encoded_bucket}/{encoded_path}"
+    project_api_key = api_key()
+    headers = {
+        "apikey": project_api_key,
+        "Authorization": f"Bearer {project_api_key}",
+        "Content-Type": content_type,
+        "x-upsert": "true",
+    }
+    req = url_request.Request(url, data=data, headers=headers, method="POST")
+    try:
+        with url_request.urlopen(req, timeout=30) as response:
+            response.read()
+    except url_error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"Supabase Storage upload failed: {exc.code} {detail}") from exc
+    except url_error.URLError as exc:
+        raise RuntimeError("Supabase Storage upload failed. Please check SUPABASE_URL and network access.") from exc
+
