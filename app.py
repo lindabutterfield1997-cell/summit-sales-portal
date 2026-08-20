@@ -59,6 +59,7 @@ from frameflow.formatting import (
     today_iso,
 )
 from frameflow.models import Product
+from frameflow import settings as frameflow_settings
 from frameflow.settings import (
     APP_DIR,
     ASSET_DIR,
@@ -81,7 +82,6 @@ from frameflow.settings import (
     ORIGINAL_UPLOAD_DIR,
     OUTPUT_DIR,
     PRODUCT_FILE,
-    PRODUCT_IMAGE_BUCKET,
     PRODUCT_IMAGE_SIZE,
     STOCK_COMMISSION_RATE,
     UPLOAD_DIR,
@@ -92,6 +92,11 @@ from frameflow.supabase_client import (
     storage_public_url as supabase_storage_public_url,
     upload_storage_object as supabase_upload_storage_object,
 )
+
+# Keep startup compatible with deployments where app.py updates slightly before
+# frameflow/settings.py. The product image bucket was added after the original
+# settings module and should not prevent the entire app from importing.
+PRODUCT_IMAGE_BUCKET = getattr(frameflow_settings, "PRODUCT_IMAGE_BUCKET", "product-images")
 
 
 def db_connect(*, isolation_level: str | None = "DEFERRED") -> sqlite3.Connection:
